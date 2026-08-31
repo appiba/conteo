@@ -64,10 +64,10 @@ En la ventana principal:
 - `1`: seleccionar `LINE_A`.
 - `2`: seleccionar `LINE_B`.
 - `R`: seleccionar la zona de deteccion `ROI`.
-- Arrastra con el mouse sobre el video para ubicar la linea o la ROI.
+- Arrastra con el mouse sobre el video para ubicar la linea vertical o la ROI. `LINE_A` debe quedar del lado de origen y `LINE_B` del lado de destino.
 - `S`: guardar en `config.json`.
 
-La logica cuenta una entrada solo cuando el mismo `track_id` cruza `LINE_A` y luego `LINE_B`. Si cruza `LINE_B` y luego `LINE_A`, se considera salida y no suma.
+La logica usa el movimiento horizontal del punto inferior-central de la persona. Con `entry_direction` en `LEFT_TO_RIGHT`, cuenta una entrada solo cuando el mismo `track_id` cruza `LINE_A` y luego `LINE_B`. Si cruza `LINE_B` y luego `LINE_A`, se considera salida y no suma.
 
 ## Controles
 

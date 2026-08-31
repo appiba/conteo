@@ -1,3 +1,16 @@
+const DEFAULT_CONFIG = {
+  lineA: [{ x: 0.38, y: 0.12 }, { x: 0.38, y: 0.92 }],
+  lineB: [{ x: 0.62, y: 0.12 }, { x: 0.62, y: 0.92 }],
+  roi: [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }],
+  entryDirection: "LEFT_TO_RIGHT",
+  lineOrientation: "vertical",
+};
+
+const ENTRY_SEQUENCES = {
+  LEFT_TO_RIGHT: ["A", "B"],
+  RIGHT_TO_LEFT: ["B", "A"],
+};
+
 const state = {
   stream: null,
   model: null,
@@ -10,11 +23,7 @@ const state = {
   activeTool: "lineA",
   dragging: null,
   lastFrameSentAt: 0,
-  config: {
-    lineA: [{ x: 0.12, y: 0.42 }, { x: 0.88, y: 0.42 }],
-    lineB: [{ x: 0.12, y: 0.62 }, { x: 0.88, y: 0.62 }],
-    roi: [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }],
-  },
+  config: cloneConfig(DEFAULT_CONFIG),
 };
 
 const els = {
@@ -70,11 +79,7 @@ function wireUi() {
   });
 
   els.restoreCalibration.addEventListener("click", () => {
-    state.config = {
-      lineA: [{ x: 0.12, y: 0.42 }, { x: 0.88, y: 0.42 }],
-      lineB: [{ x: 0.12, y: 0.62 }, { x: 0.88, y: 0.62 }],
-      roi: [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }],
-    };
+    state.config = cloneConfig(DEFAULT_CONFIG);
     saveState();
     renderAll();
     setStatus("Restaurado");
@@ -227,27 +232,113 @@ function updateCount(tracks) {
     const stored = state.tracks.get(track.id);
     if (!stored || stored.counted || !track.previousPoint) return;
 
-    const crossedA = crossedLine(track.previousPoint, track.point, state.config.lineA);
-    const crossedB = crossedLine(track.previousPoint, track.point, state.config.lineB);
-
-    if (crossedA && stored.phase === "new") {
-      stored.phase = "crossedA";
-    } else if (crossedA && stored.phase === "crossedB") {
-      stored.phase = "exit";
-    }
-
-    if (crossedB && stored.phase === "new") {
-      stored.phase = "crossedB";
-    } else if (crossedB && stored.phase === "crossedA") {
-      stored.phase = "counted";
-      stored.counted = true;
-      state.count += 1;
-      pushHistory("Entrada", state.count);
-      saveState();
-      renderAll();
-      setStatus("Entrada");
-    }
+    orderedCrossings(track.previousPoint, track.point).forEach((crossing) => {
+      if (applyCrossing(stored, crossing)) {
+        state.count += 1;
+        pushHistory("Entrada", state.count);
+        saveState();
+        renderAll();
+        setStatus("Entrada");
+      }
+    });
   });
+}
+
+function orderedCrossings(previous, current) {
+  const crossed = [];
+  if (crossedLine(previous, current, state.config.lineA)) {
+    crossed.push({ name: "A", x: lineMidX(state.config.lineA) });
+  }
+  if (crossedLine(previous, current, state.config.lineB)) {
+    crossed.push({ name: "B", x: lineMidX(state.config.lineB) });
+  }
+  const dx = current.x - previous.x;
+  crossed.sort((left, right) => (dx < 0 ? right.x - left.x : left.x - right.x));
+  return crossed.map((item) => item.name);
+}
+
+function applyCrossing(track, crossing) {
+  if (track.counted || track.phase === "counted" || track.phase === "exit") return false;
+
+  const [firstLine, secondLine] = ENTRY_SEQUENCES[state.config.entryDirection] || ENTRY_SEQUENCES.LEFT_TO_RIGHT;
+  const crossingPhase = crossing === "A" ? "crossedA" : "crossedB";
+  const firstPhase = firstLine === "A" ? "crossedA" : "crossedB";
+  const secondPhase = secondLine === "A" ? "crossedA" : "crossedB";
+
+  if (track.phase === "new") {
+    track.phase = crossingPhase;
+    return false;
+  }
+
+  if (track.phase === crossingPhase) {
+    track.phase = "new";
+    return false;
+  }
+
+  if (track.phase === firstPhase && crossing === secondLine) {
+    track.phase = "counted";
+    track.counted = true;
+    return true;
+  }
+
+  if (track.phase === secondPhase && crossing === firstLine) {
+    track.phase = "exit";
+    return false;
+  }
+
+  return false;
+}
+
+function lineMidX(line) {
+  return (line[0].x + line[1].x) / 2;
+}
+
+function verticalLineAt(x) {
+  const bounds = roiBounds(state.config.roi);
+  return [{ x: clamp(x), y: bounds.top }, { x: clamp(x), y: bounds.bottom }];
+}
+
+function roiBounds(roi) {
+  const ys = roi.map((point) => point.y);
+  return {
+    top: Math.min(...ys),
+    bottom: Math.max(...ys),
+  };
+}
+
+function isLine(value) {
+  return Array.isArray(value)
+    && value.length === 2
+    && value.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function isRoi(value) {
+  return Array.isArray(value)
+    && value.length >= 3
+    && value.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function cloneConfig(config) {
+  return JSON.parse(JSON.stringify(config));
+}
+
+function normalizeConfig(config) {
+  const normalized = cloneConfig(DEFAULT_CONFIG);
+  if (!config || typeof config !== "object") return normalized;
+
+  if (isRoi(config.roi)) {
+    normalized.roi = config.roi;
+  }
+
+  if (config.lineOrientation === "vertical") {
+    if (isLine(config.lineA)) normalized.lineA = config.lineA;
+    if (isLine(config.lineB)) normalized.lineB = config.lineB;
+  }
+
+  if (ENTRY_SEQUENCES[config.entryDirection]) {
+    normalized.entryDirection = config.entryDirection;
+  }
+  return normalized;
 }
 
 function drawOverlay(canvas, tracks) {
@@ -337,9 +428,9 @@ function addCalibrationPointerEvents() {
 function applyDragGeometry() {
   const { start, current } = state.dragging;
   if (state.activeTool === "lineA") {
-    state.config.lineA = [start, current];
+    state.config.lineA = verticalLineAt(current.x);
   } else if (state.activeTool === "lineB") {
-    state.config.lineB = [start, current];
+    state.config.lineB = verticalLineAt(current.x);
   } else {
     const left = Math.min(start.x, current.x);
     const right = Math.max(start.x, current.x);
@@ -385,7 +476,7 @@ function loadState() {
     state.history = Array.isArray(saved.history) ? saved.history : [];
   }
   if (saved.config) {
-    state.config = saved.config;
+    state.config = normalizeConfig(saved.config);
   }
 }
 
@@ -436,19 +527,20 @@ function clamp(value) {
 function crossedLine(previous, current, line) {
   const a = { x: line[0].x * els.camera.videoWidth, y: line[0].y * els.camera.videoHeight };
   const b = { x: line[1].x * els.camera.videoWidth, y: line[1].y * els.camera.videoHeight };
-  return segmentsIntersect(previous, current, a, b);
-}
+  const dx = current.x - previous.x;
+  if (Math.abs(dx) < 1) return false;
 
-function segmentsIntersect(p1, p2, p3, p4) {
-  const d1 = direction(p3, p4, p1);
-  const d2 = direction(p3, p4, p2);
-  const d3 = direction(p1, p2, p3);
-  const d4 = direction(p1, p2, p4);
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
-}
+  const gateX = (a.x + b.x) / 2;
+  const crossedX = (previous.x < gateX && current.x >= gateX) || (previous.x > gateX && current.x <= gateX);
+  if (!crossedX) return false;
 
-function direction(a, b, c) {
-  return (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x);
+  const progress = (gateX - previous.x) / dx;
+  if (progress < 0 || progress > 1) return false;
+
+  const crossingY = previous.y + (current.y - previous.y) * progress;
+  const top = Math.min(a.y, b.y) - 8;
+  const bottom = Math.max(a.y, b.y) + 8;
+  return crossingY >= top && crossingY <= bottom;
 }
 
 function pointInPolygon(point, polygon) {
