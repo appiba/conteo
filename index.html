@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Afluencia Counter</title>
+  <meta name="description" content="Demo web de conteo de afluencia con camara del navegador.">
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <section class="phone-frame" aria-label="Afluencia Counter">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Afluencia Counter</p>
+          <h1 id="viewTitle">Conteo</h1>
+        </div>
+        <div class="status-pill" id="statusPill">
+          <span class="dot"></span>
+          <span id="statusText">Listo</span>
+        </div>
+      </header>
+
+      <section class="view active" id="view-count">
+        <div class="video-wrap">
+          <video id="camera" playsinline muted autoplay></video>
+          <canvas id="overlay"></canvas>
+          <div class="video-empty" id="videoEmpty">
+            <strong>Listo para contar</strong>
+            <span>Presiona INICIAR y permite la camara.</span>
+          </div>
+        </div>
+
+        <section class="counter-card">
+          <span class="label">Ingresos hoy</span>
+          <strong id="countValue">0</strong>
+          <span class="small" id="todayLabel">--</span>
+        </section>
+
+        <div class="actions">
+          <button class="primary" id="toggleCamera" type="button">
+            <span class="icon">▶</span>
+            <span>Iniciar</span>
+          </button>
+          <button id="resetCount" type="button">
+            <span class="icon">↺</span>
+            <span>Reiniciar</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="view" id="view-calibrate">
+        <div class="video-wrap calibrating">
+          <video id="calibrationMirror" playsinline muted autoplay></video>
+          <canvas id="calibrationOverlay"></canvas>
+          <div class="video-empty" id="calibrationEmpty">
+            <strong>Calibrador</strong>
+            <span>Primero inicia la camara en Conteo.</span>
+          </div>
+        </div>
+
+        <div class="calibration-tools">
+          <button class="tool active" data-tool="lineA" type="button">Linea A</button>
+          <button class="tool" data-tool="lineB" type="button">Linea B</button>
+          <button class="tool" data-tool="roi" type="button">Zona</button>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="saveCalibration" type="button">
+            <span class="icon">✓</span>
+            <span>Guardar</span>
+          </button>
+          <button id="restoreCalibration" type="button">
+            <span class="icon">↺</span>
+            <span>Restaurar</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="view" id="view-history">
+        <section class="history-hero">
+          <span>Hoy</span>
+          <strong id="historyTotal">0</strong>
+          <small id="historyDate">--</small>
+        </section>
+        <section class="history-list" id="historyList" aria-label="Historial de conteo"></section>
+      </section>
+
+      <section class="view" id="view-help">
+        <div class="video-wrap mini">
+          <video id="helpMirror" playsinline muted autoplay></video>
+          <canvas id="helpOverlay"></canvas>
+          <div class="video-empty">
+            <strong>Primeros pasos</strong>
+            <span>El navegador debe permitir la camara.</span>
+          </div>
+        </div>
+        <ol class="steps">
+          <li><span>1</span>Presiona INICIAR.</li>
+          <li><span>2</span>Permite la camara.</li>
+          <li><span>3</span>Calibra zona, A y B.</li>
+          <li><span>4</span>Cruza A → B para contar.</li>
+        </ol>
+      </section>
+
+      <nav class="tabs" aria-label="Navegacion">
+        <button class="tab active" data-view="count" type="button">
+          <span class="tab-icon">●</span>
+          <span>Conteo</span>
+        </button>
+        <button class="tab" data-view="calibrate" type="button">
+          <span class="tab-icon">□</span>
+          <span>Calibrar</span>
+        </button>
+        <button class="tab" data-view="history" type="button">
+          <span class="tab-icon">≡</span>
+          <span>Historial</span>
+        </button>
+        <button class="tab" data-view="help" type="button">
+          <span class="tab-icon">?</span>
+          <span>Ayuda</span>
+        </button>
+      </nav>
+    </section>
+  </main>
+</body>
+</html>
