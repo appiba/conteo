@@ -2,13 +2,21 @@ const DEFAULT_CONFIG = {
   lineA: [{ x: 0.38, y: 0.12 }, { x: 0.38, y: 0.92 }],
   lineB: [{ x: 0.62, y: 0.12 }, { x: 0.62, y: 0.92 }],
   roi: [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }],
-  entryDirection: "LEFT_TO_RIGHT",
   lineOrientation: "vertical",
+  entryDirection: "LEFT_TO_RIGHT",
+  lineAPosition: 0.38,
+  lineBPosition: 0.62,
+  lineSeparation: 0.24,
+  minLineSeparation: 0.05,
+  calibrationId: null,
+  sessionId: null,
+  deviceId: null,
+  zoneId: null,
 };
 
-const ENTRY_SEQUENCES = {
-  LEFT_TO_RIGHT: ["A", "B"],
-  RIGHT_TO_LEFT: ["B", "A"],
+const DIRECTIONS_BY_ORIENTATION = {
+  vertical: ["LEFT_TO_RIGHT", "RIGHT_TO_LEFT"],
+  horizontal: ["BOTTOM_TO_TOP", "TOP_TO_BOTTOM"],
 };
 
 const DETECTION_THRESHOLD = 0.30;
@@ -19,6 +27,7 @@ const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
 const CAMERA_NAME = "ENTRADA_01";
+const MIN_LINE_SEPARATION = 0.05;
 
 const state = {
   stream: null,
@@ -35,6 +44,14 @@ const state = {
   nextTrackId: 1,
   activeView: "count",
   activeTool: "lineA",
+  calibrationDraft: null,
+  calibrationStatus: "Ajusta A, B o Zona y guarda.",
+  calibrationStatusKind: "ok",
+  calibrationProbe: {
+    active: false,
+    tracks: new Map(),
+    events: [],
+  },
   dragging: null,
   lastFrameSentAt: 0,
   lastDebugLogAt: 0,
@@ -83,7 +100,11 @@ const els = {
   peakHourLabel: document.querySelector("#peakHourLabel"),
   averageHourLabel: document.querySelector("#averageHourLabel"),
   saveCalibration: document.querySelector("#saveCalibration"),
+  cancelCalibration: document.querySelector("#cancelCalibration"),
   restoreCalibration: document.querySelector("#restoreCalibration"),
+  swapLines: document.querySelector("#swapLines"),
+  testCalibration: document.querySelector("#testCalibration"),
+  calibrationStatus: document.querySelector("#calibrationStatus"),
   statusText: document.querySelector("#statusText"),
   statusPill: document.querySelector("#statusPill"),
   viewTitle: document.querySelector("#viewTitle"),
@@ -92,6 +113,7 @@ const els = {
 let todayKey = guayaquilDateKey(new Date());
 
 loadState();
+ensureCalibrationDraft();
 wireUi();
 renderAll();
 setStatus("Listo");
@@ -136,15 +158,67 @@ function wireUi() {
   });
 
   els.saveCalibration.addEventListener("click", () => {
+    ensureCalibrationDraft();
+    const validation = validateCalibration(state.calibrationDraft);
+    if (!validation.ok) {
+      setCalibrationStatus(validation.message, "error");
+      setStatus("Revisar");
+      return;
+    }
+    state.config = normalizeConfig(state.calibrationDraft);
+    state.calibrationDraft = cloneConfig(state.config);
+    state.tracks.clear();
     saveState();
+    renderAll();
+    setCalibrationStatus("Calibracion guardada.", "ok");
     setStatus("Calibrado");
   });
 
+  els.cancelCalibration.addEventListener("click", () => {
+    state.calibrationDraft = cloneConfig(state.config);
+    state.dragging = null;
+    setCalibrationStatus("Cambios cancelados.", "ok");
+    renderAll();
+  });
+
   els.restoreCalibration.addEventListener("click", () => {
-    state.config = cloneConfig(DEFAULT_CONFIG);
-    saveState();
+    const confirmed = confirm("Restaurar la calibracion por defecto en esta pantalla?");
+    if (!confirmed) return;
+    state.calibrationDraft = normalizeConfig(DEFAULT_CONFIG);
+    setCalibrationStatus("Calibracion restaurada. Presiona Guardar.", "warning");
     renderAll();
     setStatus("Restaurado");
+  });
+
+  els.swapLines.addEventListener("click", () => {
+    ensureCalibrationDraft();
+    const next = cloneConfig(state.calibrationDraft);
+    [next.lineA, next.lineB] = [next.lineB, next.lineA];
+    updateCalibrationMetadata(next);
+    state.calibrationDraft = next;
+    setCalibrationStatus("Lineas A y B intercambiadas. Presiona Guardar.", "warning");
+    renderAll();
+  });
+
+  els.testCalibration.addEventListener("click", () => {
+    state.calibrationProbe.active = !state.calibrationProbe.active;
+    state.calibrationProbe.tracks.clear();
+    state.calibrationProbe.events = [];
+    els.testCalibration.classList.toggle("active", state.calibrationProbe.active);
+    setCalibrationStatus(state.calibrationProbe.active ? "Prueba activa: no suma al contador oficial." : "Prueba detenida.", "ok");
+    renderAll();
+  });
+
+  document.querySelectorAll("[data-orientation]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setCalibrationOrientation(button.dataset.orientation);
+    });
+  });
+
+  document.querySelectorAll("[data-direction]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setCalibrationDirection(button.dataset.direction);
+    });
   });
 
   document.querySelectorAll(".tab").forEach((button) => {
@@ -219,6 +293,8 @@ async function loop() {
   if (!state.running) return;
   ensureCurrentDay();
   if (els.camera.videoWidth > 0) {
+    const calibrationMode = state.activeView === "calibrate";
+    const activeConfig = calibrationMode ? draftConfig() : state.config;
     const predictions = await state.model.detect(els.camera);
     const people = predictions
       .filter((item) => item.class === "person" && item.score >= DETECTION_THRESHOLD)
@@ -231,21 +307,25 @@ async function loop() {
         },
         score: item.score,
       }));
-    const tracks = updateTracks(people);
+    const tracks = updateTracks(people, activeConfig);
     state.debugStats.detectedPersons = people.length;
     state.debugStats.activeTracks = tracks.length;
-    updateCount(tracks);
+    if (calibrationMode) {
+      updateCalibrationProbe(tracks);
+    } else {
+      updateCount(tracks, state.config);
+    }
     renderDebugMetrics();
     logDebugCounts(people.length, tracks.length);
-    drawOverlay(els.overlay, tracks);
-    drawOverlay(els.calibrationOverlay, tracks);
-    drawOverlay(els.helpOverlay, tracks);
+    drawOverlay(els.overlay, tracks, state.config);
+    drawOverlay(els.calibrationOverlay, tracks, draftConfig(), { calibration: true });
+    drawOverlay(els.helpOverlay, tracks, state.config);
     maybeSendFrameToLocalProcessor();
   }
   requestAnimationFrame(loop);
 }
 
-function updateTracks(detections) {
+function updateTracks(detections, config = state.config) {
   const now = performance.now();
   const active = [];
   const candidates = [];
@@ -304,15 +384,15 @@ function updateTracks(detections) {
     active.push({ id, ...track });
   });
 
-  return active.filter((track) => pointInPolygon(track.point, state.config.roi));
+  return active.filter((track) => pointInPolygon(track.point, config.roi));
 }
 
-function updateCount(tracks) {
+function updateCount(tracks, config = state.config) {
   tracks.forEach((track) => {
     const stored = state.tracks.get(track.id);
     if (!stored || stored.counted || !track.previousPoint) return;
 
-    orderedCrossings(track.previousPoint, track.point).forEach((crossing) => {
+    orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
       console.debug(`Track ${track.id} crossed ${crossing}`);
       if (applyCrossing(stored, crossing)) {
         registerEntry(track);
@@ -640,26 +720,23 @@ function groupStats(events) {
   };
 }
 
-function orderedCrossings(previous, current) {
+function orderedCrossings(previous, current, config = state.config) {
   const crossed = [];
-  if (crossedLine(previous, current, state.config.lineA)) {
-    crossed.push({ name: "A", x: lineMidX(state.config.lineA) });
+  if (crossedLine(previous, current, config.lineA, config)) {
+    crossed.push({ name: "A", axis: lineAxisMid(config.lineA, config) });
   }
-  if (crossedLine(previous, current, state.config.lineB)) {
-    crossed.push({ name: "B", x: lineMidX(state.config.lineB) });
+  if (crossedLine(previous, current, config.lineB, config)) {
+    crossed.push({ name: "B", axis: lineAxisMid(config.lineB, config) });
   }
-  const dx = current.x - previous.x;
-  crossed.sort((left, right) => (dx < 0 ? right.x - left.x : left.x - right.x));
+  const delta = axisValue(current, config) - axisValue(previous, config);
+  crossed.sort((left, right) => (delta < 0 ? right.axis - left.axis : left.axis - right.axis));
   return crossed.map((item) => item.name);
 }
 
 function applyCrossing(track, crossing) {
   if (track.counted || track.phase === "counted" || track.phase === "exit") return false;
 
-  const [firstLine, secondLine] = ENTRY_SEQUENCES[state.config.entryDirection] || ENTRY_SEQUENCES.LEFT_TO_RIGHT;
   const crossingPhase = crossing === "A" ? "crossedA" : "crossedB";
-  const firstPhase = firstLine === "A" ? "crossedA" : "crossedB";
-  const secondPhase = secondLine === "A" ? "crossedA" : "crossedB";
 
   if (track.phase === "new") {
     track.phase = crossingPhase;
@@ -671,13 +748,13 @@ function applyCrossing(track, crossing) {
     return false;
   }
 
-  if (track.phase === firstPhase && crossing === secondLine) {
+  if (track.phase === "crossedA" && crossing === "B") {
     track.phase = "counted";
     track.counted = true;
     return true;
   }
 
-  if (track.phase === secondPhase && crossing === firstLine) {
+  if (track.phase === "crossedB" && crossing === "A") {
     track.phase = "exit";
     return false;
   }
@@ -685,18 +762,30 @@ function applyCrossing(track, crossing) {
   return false;
 }
 
-function lineMidX(line) {
-  return (line[0].x + line[1].x) / 2;
+function lineAxisMid(line, config = state.config) {
+  const axis = config.lineOrientation === "horizontal" ? "y" : "x";
+  return (line[0][axis] + line[1][axis]) / 2;
 }
 
-function verticalLineAt(x) {
-  const bounds = roiBounds(state.config.roi);
-  return [{ x: clamp(x), y: bounds.top }, { x: clamp(x), y: bounds.bottom }];
+function axisValue(point, config = state.config) {
+  return config.lineOrientation === "horizontal" ? point.y : point.x;
+}
+
+function lineAt(axisPosition, config = draftConfig()) {
+  const bounds = roiBounds(config.roi);
+  const position = clamp(axisPosition);
+  if (config.lineOrientation === "horizontal") {
+    return [{ x: bounds.left, y: position }, { x: bounds.right, y: position }];
+  }
+  return [{ x: position, y: bounds.top }, { x: position, y: bounds.bottom }];
 }
 
 function roiBounds(roi) {
+  const xs = roi.map((point) => point.x);
   const ys = roi.map((point) => point.y);
   return {
+    left: Math.min(...xs),
+    right: Math.max(...xs),
     top: Math.min(...ys),
     bottom: Math.max(...ys),
   };
@@ -718,35 +807,272 @@ function cloneConfig(config) {
   return JSON.parse(JSON.stringify(config));
 }
 
-function normalizeConfig(config) {
+function normalizeOrientation(value) {
+  return value === "horizontal" ? "horizontal" : "vertical";
+}
+
+function allowedDirections(orientation) {
+  return DIRECTIONS_BY_ORIENTATION[normalizeOrientation(orientation)];
+}
+
+function normalizeDirection(value, orientation) {
+  const options = allowedDirections(orientation);
+  return options.includes(value) ? value : options[0];
+}
+
+function defaultLinePositions(orientation, direction) {
+  const normalizedOrientation = normalizeOrientation(orientation);
+  const normalizedDirection = normalizeDirection(direction, normalizedOrientation);
+  if (normalizedOrientation === "horizontal") {
+    return normalizedDirection === "TOP_TO_BOTTOM" ? [0.35, 0.65] : [0.65, 0.35];
+  }
+  return normalizedDirection === "RIGHT_TO_LEFT" ? [0.65, 0.35] : [0.35, 0.65];
+}
+
+function inferLineOrientation(config) {
+  if (config.lineOrientation === "horizontal" || config.lineOrientation === "vertical") return config.lineOrientation;
+  if (isLine(config.lineA) && Math.abs(config.lineA[0].y - config.lineA[1].y) < Math.abs(config.lineA[0].x - config.lineA[1].x)) {
+    return "horizontal";
+  }
+  return "vertical";
+}
+
+function updateCalibrationMetadata(config) {
+  config.lineOrientation = normalizeOrientation(config.lineOrientation);
+  config.entryDirection = normalizeDirection(config.entryDirection, config.lineOrientation);
+  config.minLineSeparation = Number.isFinite(config.minLineSeparation) ? clamp(config.minLineSeparation) : MIN_LINE_SEPARATION;
+  syncLineSpansToRoi(config);
+  config.lineAPosition = round(linePosition(config.lineA, config), 4);
+  config.lineBPosition = round(linePosition(config.lineB, config), 4);
+  config.lineSeparation = round(Math.abs(config.lineAPosition - config.lineBPosition), 4);
+  config.calibrationId = config.calibrationId || makeId("cal");
+  config.sessionId = config.sessionId || null;
+  config.deviceId = config.deviceId || null;
+  config.zoneId = config.zoneId || null;
+  return config;
+}
+
+function makeId(prefix) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function linePosition(line, config = state.config) {
+  return clamp(lineAxisMid(line, config));
+}
+
+function setLinePositions(config, aPosition, bPosition) {
+  config.lineA = lineAt(aPosition, config);
+  config.lineB = lineAt(bPosition, config);
+  updateCalibrationMetadata(config);
+  return config;
+}
+
+function syncLineSpansToRoi(config) {
+  if (!isRoi(config.roi)) config.roi = cloneConfig(DEFAULT_CONFIG.roi);
+  if (!isLine(config.lineA) || !isLine(config.lineB)) {
+    const [aPosition, bPosition] = defaultLinePositions(config.lineOrientation, config.entryDirection);
+    config.lineA = lineAt(aPosition, config);
+    config.lineB = lineAt(bPosition, config);
+    return;
+  }
+  const aPosition = linePosition(config.lineA, config);
+  const bPosition = linePosition(config.lineB, config);
+  config.lineA = lineAt(aPosition, config);
+  config.lineB = lineAt(bPosition, config);
+}
+
+function directionPositionsValid(aPosition, bPosition, config) {
+  const orientation = normalizeOrientation(config.lineOrientation);
+  const direction = normalizeDirection(config.entryDirection, orientation);
+  if (orientation === "vertical") {
+    return direction === "RIGHT_TO_LEFT" ? aPosition > bPosition : aPosition < bPosition;
+  }
+  return direction === "TOP_TO_BOTTOM" ? aPosition < bPosition : aPosition > bPosition;
+}
+
+function alignLinesToDirection(config) {
+  const aPosition = linePosition(config.lineA, config);
+  const bPosition = linePosition(config.lineB, config);
+  if (directionPositionsValid(aPosition, bPosition, config)) return config;
+
+  if (directionPositionsValid(bPosition, aPosition, config)) {
+    [config.lineA, config.lineB] = [config.lineB, config.lineA];
+  } else {
+    const [defaultA, defaultB] = defaultLinePositions(config.lineOrientation, config.entryDirection);
+    setLinePositions(config, defaultA, defaultB);
+  }
+  updateCalibrationMetadata(config);
+  return config;
+}
+
+function normalizeConfig(config, options = {}) {
+  const shouldAlign = options.align !== false;
   const normalized = cloneConfig(DEFAULT_CONFIG);
   if (!config || typeof config !== "object") return normalized;
+
+  normalized.lineOrientation = normalizeOrientation(inferLineOrientation(config));
+  normalized.entryDirection = normalizeDirection(config.entryDirection, normalized.lineOrientation);
 
   if (isRoi(config.roi)) {
     normalized.roi = config.roi;
   }
 
-  if (config.lineOrientation === "vertical") {
-    if (isLine(config.lineA)) normalized.lineA = config.lineA;
-    if (isLine(config.lineB)) normalized.lineB = config.lineB;
-  }
+  if (isLine(config.lineA)) normalized.lineA = config.lineA;
+  if (isLine(config.lineB)) normalized.lineB = config.lineB;
+  if (Number.isFinite(config.minLineSeparation)) normalized.minLineSeparation = config.minLineSeparation;
+  if (config.calibrationId) normalized.calibrationId = config.calibrationId;
+  if (config.sessionId) normalized.sessionId = config.sessionId;
+  if (config.deviceId) normalized.deviceId = config.deviceId;
+  if (config.zoneId) normalized.zoneId = config.zoneId;
 
-  if (ENTRY_SEQUENCES[config.entryDirection]) {
-    normalized.entryDirection = config.entryDirection;
+  updateCalibrationMetadata(normalized);
+  if (shouldAlign) {
+    alignLinesToDirection(normalized);
   }
   return normalized;
 }
 
-function drawOverlay(canvas, tracks) {
+function ensureCalibrationDraft() {
+  if (!state.calibrationDraft) {
+    state.calibrationDraft = cloneConfig(state.config);
+  }
+  state.calibrationDraft = normalizeConfig(state.calibrationDraft, { align: false });
+  return state.calibrationDraft;
+}
+
+function draftConfig() {
+  return state.calibrationDraft || ensureCalibrationDraft();
+}
+
+function setCalibrationOrientation(orientation) {
+  const next = cloneConfig(draftConfig());
+  next.lineOrientation = normalizeOrientation(orientation);
+  next.entryDirection = normalizeDirection(next.entryDirection, next.lineOrientation);
+  const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
+  setLinePositions(next, aPosition, bPosition);
+  state.calibrationDraft = next;
+  setCalibrationStatus("Orientacion lista. Presiona Guardar.", "warning");
+  renderAll();
+}
+
+function setCalibrationDirection(direction) {
+  const next = cloneConfig(draftConfig());
+  next.entryDirection = normalizeDirection(direction, next.lineOrientation);
+  const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
+  setLinePositions(next, aPosition, bPosition);
+  state.calibrationDraft = next;
+  setCalibrationStatus("Direccion lista. Presiona Guardar.", "warning");
+  renderAll();
+}
+
+function validateCalibration(config) {
+  if (!isRoi(config.roi)) {
+    return { ok: false, kind: "error", message: "Zona invalida." };
+  }
+  if (!isLine(config.lineA) || !isLine(config.lineB)) {
+    return { ok: false, kind: "error", message: "Lineas invalidas." };
+  }
+  updateCalibrationMetadata(config);
+  const bounds = roiBounds(config.roi);
+  if (bounds.right - bounds.left < 0.05 || bounds.bottom - bounds.top < 0.05) {
+    return { ok: false, kind: "error", message: "Zona demasiado pequena." };
+  }
+  const separation = Math.abs(config.lineAPosition - config.lineBPosition);
+  const minimum = Math.max(0.01, Number(config.minLineSeparation || MIN_LINE_SEPARATION));
+  if (separation <= 0.001) {
+    return { ok: false, kind: "error", message: "A y B estan encima. Separalas." };
+  }
+  if (separation < minimum) {
+    return {
+      ok: false,
+      kind: "warning",
+      message: `Lineas muy cerca: ${(separation * 100).toFixed(1)}%. Minimo ${(minimum * 100).toFixed(0)}%.`,
+    };
+  }
+  if (!directionPositionsValid(config.lineAPosition, config.lineBPosition, config)) {
+    return { ok: false, kind: "warning", message: "El orden A/B no coincide con la direccion." };
+  }
+  return { ok: true, kind: "ok", message: calibrationDistanceLabel(config) };
+}
+
+function calibrationDistanceLabel(config) {
+  const axisPixels = config.lineOrientation === "horizontal"
+    ? els.camera.videoHeight || els.calibrationOverlay.height || 1
+    : els.camera.videoWidth || els.calibrationOverlay.width || 1;
+  const pixels = Math.round(Math.abs(config.lineAPosition - config.lineBPosition) * axisPixels);
+  return `Separacion: ${pixels}px · ${(Math.abs(config.lineAPosition - config.lineBPosition) * 100).toFixed(1)}%`;
+}
+
+function refreshCalibrationStatus() {
+  const validation = validateCalibration(draftConfig());
+  setCalibrationStatus(validation.message, validation.kind);
+}
+
+function setCalibrationStatus(message, kind = "ok") {
+  state.calibrationStatus = message;
+  state.calibrationStatusKind = kind;
+  if (!els.calibrationStatus) return;
+  els.calibrationStatus.textContent = message;
+  els.calibrationStatus.classList.toggle("warning", kind === "warning");
+  els.calibrationStatus.classList.toggle("error", kind === "error");
+}
+
+function renderCalibrationControls() {
+  const config = draftConfig();
+  document.querySelectorAll("[data-orientation]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.orientation === config.lineOrientation);
+  });
+  document.querySelectorAll("[data-direction]").forEach((button) => {
+    const visible = allowedDirections(config.lineOrientation).includes(button.dataset.direction);
+    button.hidden = !visible;
+    button.classList.toggle("active", button.dataset.direction === config.entryDirection);
+  });
+  document.querySelectorAll(".tool").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tool === state.activeTool);
+  });
+  if (els.testCalibration) {
+    els.testCalibration.classList.toggle("active", state.calibrationProbe.active);
+  }
+  setCalibrationStatus(state.calibrationStatus || calibrationDistanceLabel(config), state.calibrationStatusKind || "ok");
+}
+
+function updateCalibrationProbe(tracks) {
+  if (!state.calibrationProbe.active) return;
+  const config = draftConfig();
+  let probeCount = 0;
+  tracks.forEach((track) => {
+    const memory = state.calibrationProbe.tracks.get(track.id) || { phase: "new", counted: false };
+    if (track.previousPoint) {
+      orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
+        if (applyCrossing(memory, crossing)) {
+          probeCount += 1;
+          state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now() });
+        }
+      });
+    }
+    state.calibrationProbe.tracks.set(track.id, memory);
+  });
+  if (probeCount > 0) {
+    setCalibrationStatus(`Prueba: +${probeCount} entrada. Oficial no cambia.`, "ok");
+  }
+}
+
+function drawOverlay(canvas, tracks, config = state.config, options = {}) {
   const video = els.camera.videoWidth ? els.camera : null;
   if (!video) return;
 
   resizeCanvas(canvas, video.videoWidth, video.videoHeight);
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawRoi(ctx, state.config.roi, canvas);
-  drawLine(ctx, state.config.lineA, canvas, "#15f070", "LINEA A");
-  drawLine(ctx, state.config.lineB, canvas, "#f7bd31", "LINEA B");
+  drawRoi(ctx, config.roi, canvas);
+  drawLine(ctx, config.lineA, canvas, "#15f070", "A", config);
+  drawLine(ctx, config.lineB, canvas, "#f7bd31", "B", config);
+  if (options.calibration) {
+    drawCalibrationGuides(ctx, canvas, config);
+  }
 
   tracks.forEach((track) => {
     ctx.strokeStyle = "#15f070";
@@ -764,7 +1090,7 @@ function drawOverlay(canvas, tracks) {
 }
 
 function drawCalibration() {
-  drawOverlay(els.calibrationOverlay, []);
+  drawOverlay(els.calibrationOverlay, [], draftConfig(), { calibration: true });
 }
 
 function drawLine(ctx, line, canvas, color, label) {
@@ -780,8 +1106,51 @@ function drawLine(ctx, line, canvas, color, label) {
   ctx.fillStyle = color;
   ctx.fillRect(a.x - 5, a.y - 5, 10, 10);
   ctx.fillRect(b.x - 5, b.y - 5, 10, 10);
-  ctx.font = "14px system-ui";
-  ctx.fillText(label, a.x + 8, a.y - 8);
+  ctx.font = "bold 16px system-ui";
+  ctx.fillText(label, a.x + 8, Math.max(18, a.y - 8));
+}
+
+function drawCalibrationGuides(ctx, canvas, config) {
+  const a = lineCenterPx(config.lineA, canvas);
+  const b = lineCenterPx(config.lineB, canvas);
+  ctx.save();
+  ctx.strokeStyle = "rgba(108, 231, 255, 0.9)";
+  ctx.fillStyle = "rgba(108, 231, 255, 0.95)";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([]);
+  drawArrow(ctx, a, b);
+  ctx.font = "bold 14px system-ui";
+  ctx.fillText("ORIGEN", clampPx(a.x - 34, canvas.width - 70), clampPx(a.y - 18, canvas.height - 18));
+  ctx.fillText("DESTINO", clampPx(b.x - 38, canvas.width - 76), clampPx(b.y + 28, canvas.height - 14));
+  ctx.fillStyle = "rgba(1, 8, 5, 0.72)";
+  ctx.fillRect(10, 10, 210, 28);
+  ctx.fillStyle = "#eafff1";
+  ctx.fillText("Entrada: A -> B", 22, 30);
+  ctx.restore();
+}
+
+function lineCenterPx(line, canvas) {
+  const [a, b] = line.map((point) => toPx(point, canvas));
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function drawArrow(ctx, start, end) {
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const headLength = 16;
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(end.x, end.y);
+  ctx.lineTo(end.x - headLength * Math.cos(angle - Math.PI / 6), end.y - headLength * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(end.x - headLength * Math.cos(angle + Math.PI / 6), end.y - headLength * Math.sin(angle + Math.PI / 6));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function clampPx(value, max) {
+  return Math.max(10, Math.min(max, value));
 }
 
 function drawRoi(ctx, roi, canvas) {
@@ -803,41 +1172,72 @@ function drawRoi(ctx, roi, canvas) {
 function addCalibrationPointerEvents() {
   const canvas = els.calibrationOverlay;
   canvas.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    if (canvas.setPointerCapture) {
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch (_error) {
+        // Some mobile browsers reject pointer capture for synthetic or interrupted touches.
+      }
+    }
     const point = pointerToNorm(event, canvas);
-    state.dragging = { start: point, current: point };
+    state.dragging = { start: point, current: point, pointerId: event.pointerId };
+    applyDragGeometry();
+    drawCalibration();
   });
   canvas.addEventListener("pointermove", (event) => {
     if (!state.dragging) return;
+    event.preventDefault();
     state.dragging.current = pointerToNorm(event, canvas);
     applyDragGeometry();
     drawCalibration();
   });
-  canvas.addEventListener("pointerup", () => {
+  canvas.addEventListener("pointerup", (event) => {
     if (!state.dragging) return;
+    event.preventDefault();
     applyDragGeometry();
     state.dragging = null;
-    saveState();
+    refreshCalibrationStatus();
+    drawCalibration();
+  });
+  canvas.addEventListener("pointercancel", () => {
+    state.dragging = null;
     drawCalibration();
   });
 }
 
 function applyDragGeometry() {
   const { start, current } = state.dragging;
+  const config = draftConfig();
   if (state.activeTool === "lineA") {
-    state.config.lineA = verticalLineAt(current.x);
+    config.lineA = lineAt(config.lineOrientation === "horizontal" ? current.y : current.x, config);
   } else if (state.activeTool === "lineB") {
-    state.config.lineB = verticalLineAt(current.x);
+    config.lineB = lineAt(config.lineOrientation === "horizontal" ? current.y : current.x, config);
   } else {
     const left = Math.min(start.x, current.x);
     const right = Math.max(start.x, current.x);
     const top = Math.min(start.y, current.y);
     const bottom = Math.max(start.y, current.y);
-    state.config.roi = [{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }];
+    if (right - left < 0.02 || bottom - top < 0.02) {
+      setCalibrationStatus("Zona demasiado pequena.", "warning");
+      return;
+    }
+    config.roi = [{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }];
+    syncLineSpansToRoi(config);
   }
+  updateCalibrationMetadata(config);
+  state.calibrationDraft = config;
+  const validation = validateCalibration(config);
+  setCalibrationStatus(validation.message, validation.kind);
 }
 
 function setView(view) {
   state.activeView = view;
+  if (view === "calibrate") {
+    ensureCalibrationDraft();
+    state.tracks.clear();
+    refreshCalibrationStatus();
+  }
   document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${view}`));
   document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   const titles = { count: "Conteo", calibrate: "Calibrador", history: "Historial", help: "Primeros pasos" };
@@ -860,6 +1260,7 @@ function renderAll() {
   renderHistory(summary);
   renderDebugMetrics(summary);
   renderLiveSummary(summary);
+  renderCalibrationControls();
   drawCalibration();
 }
 
@@ -1005,23 +1406,26 @@ function clamp(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-function crossedLine(previous, current, line) {
+function crossedLine(previous, current, line, config = state.config) {
   const a = { x: line[0].x * els.camera.videoWidth, y: line[0].y * els.camera.videoHeight };
   const b = { x: line[1].x * els.camera.videoWidth, y: line[1].y * els.camera.videoHeight };
-  const dx = current.x - previous.x;
-  if (Math.abs(dx) < 1) return false;
+  const orientation = config.lineOrientation === "horizontal" ? "horizontal" : "vertical";
+  const axis = orientation === "horizontal" ? "y" : "x";
+  const otherAxis = orientation === "horizontal" ? "x" : "y";
+  const delta = current[axis] - previous[axis];
+  if (Math.abs(delta) < 1) return false;
 
-  const gateX = (a.x + b.x) / 2;
-  const crossedX = (previous.x < gateX && current.x >= gateX) || (previous.x > gateX && current.x <= gateX);
-  if (!crossedX) return false;
+  const gate = (a[axis] + b[axis]) / 2;
+  const crossedAxis = (previous[axis] < gate && current[axis] >= gate) || (previous[axis] > gate && current[axis] <= gate);
+  if (!crossedAxis) return false;
 
-  const progress = (gateX - previous.x) / dx;
+  const progress = (gate - previous[axis]) / delta;
   if (progress < 0 || progress > 1) return false;
 
-  const crossingY = previous.y + (current.y - previous.y) * progress;
-  const top = Math.min(a.y, b.y) - 8;
-  const bottom = Math.max(a.y, b.y) + 8;
-  return crossingY >= top && crossingY <= bottom;
+  const crossingOther = previous[otherAxis] + (current[otherAxis] - previous[otherAxis]) * progress;
+  const lineMin = Math.min(a[otherAxis], b[otherAxis]) - 8;
+  const lineMax = Math.max(a[otherAxis], b[otherAxis]) + 8;
+  return crossingOther >= lineMin && crossingOther <= lineMax;
 }
 
 function pointInPolygon(point, polygon) {

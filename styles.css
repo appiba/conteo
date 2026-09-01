@@ -289,6 +289,12 @@ canvas {
   border-color: var(--green);
 }
 
+.actions button.active {
+  background: #123b27;
+  border-color: var(--green);
+  color: #a6ffc9;
+}
+
 .icon {
   margin-right: 6px;
 }
@@ -303,6 +309,78 @@ canvas {
 .tool.active {
   color: #021006;
   background: var(--green);
+}
+
+.calibration-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.calibration-group {
+  display: grid;
+  gap: 6px;
+}
+
+.calibration-group > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.direction-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.segmented button {
+  min-height: 42px;
+  padding: 0 8px;
+  border: 1px solid #1f3328;
+  border-radius: 8px;
+  background: #0b110e;
+  color: #dff8ea;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.segmented button.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #031008;
+}
+
+.segmented button[hidden] {
+  display: none;
+}
+
+.calibration-status {
+  min-height: 42px;
+  display: grid;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid #1f3328;
+  border-radius: 8px;
+  background: #0b110e;
+  color: #bde8cf;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.calibration-status.warning {
+  border-color: rgba(247, 189, 49, 0.65);
+  color: #ffe09a;
+}
+
+.calibration-status.error {
+  border-color: rgba(255, 89, 89, 0.75);
+  color: #ffb7b7;
 }
 
 .history-hero {
@@ -454,6 +532,7 @@ canvas {
   }
 
   #view-calibrate .calibration-tools,
+  #view-calibrate .calibration-panel,
   #view-calibrate .actions {
     margin-top: 0;
   }
