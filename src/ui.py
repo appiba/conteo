@@ -47,6 +47,11 @@ class AppUi:
                 f"PERSONAS DETECTADAS: {metrics.get('detected_persons', len(detections))}",
                 f"TRACKS ACTIVOS: {metrics.get('active_tracks', len(detections))}",
                 f"ENTRADAS CONFIRMADAS: {metrics.get('entries_confirmed', total)}",
+                f"PERSONAS ULTIMO MINUTO: {metrics.get('last_1_minute', 0)}",
+                f"PERSONAS ULTIMOS 5 MIN: {metrics.get('last_5_minutes', 0)}",
+                f"RITMO: {metrics.get('live_rate_per_minute', 0)}/MIN",
+                f"PROYECCION: {metrics.get('projected_people_per_hour', 0)}/HORA",
+                f"FRANJA ACTUAL: {metrics.get('current_bucket', '--')}",
             ]
             for text in debug_lines:
                 self._put_text(cv2, view, text, (30, y_text), 0.58, (165, 245, 205))
@@ -84,7 +89,7 @@ class AppUi:
         labels = [
             ("DETENER" if running else "INICIAR", "toggle_run"),
             ("CALIBRAR", "toggle_calibrate"),
-            ("RESET", "reset_counter"),
+            ("NUEVA SESION", "reset_counter"),
             ("CONFIG", "config"),
         ]
         buttons = []

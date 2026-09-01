@@ -66,9 +66,32 @@
           </button>
           <button id="resetCount" type="button">
             <span class="icon">↺</span>
-            <span>Reiniciar</span>
+            <span>Reiniciar sesión</span>
           </button>
         </div>
+
+        <section class="live-card" aria-label="Resumen de afluencia">
+          <div>
+            <span>Hora actual</span>
+            <strong id="currentBucketLabel">--</strong>
+            <small id="currentBucketCount">0 ingresos</small>
+          </div>
+          <div>
+            <span>Ritmo actual</span>
+            <strong id="liveRateValue">0/min</strong>
+            <small id="hourProjectionValue">Proyección 0/hora</small>
+          </div>
+          <div>
+            <span>Últimos 15 min</span>
+            <strong id="last15Value">0</strong>
+            <small id="last30Value">Últimos 30 min: 0</small>
+          </div>
+          <div>
+            <span>Grupo máx.</span>
+            <strong id="maxGroupValue">0</strong>
+            <small id="avgGroupValue">Promedio 0</small>
+          </div>
+        </section>
       </section>
 
       <section class="view" id="view-calibrate">
@@ -104,8 +127,16 @@
           <span>Hoy</span>
           <strong id="historyTotal">0</strong>
           <small id="historyDate">--</small>
+          <small id="peakHourLabel">Hora pico: --</small>
+          <small id="averageHourLabel">Promedio: 0/hora</small>
         </section>
         <section class="history-list" id="historyList" aria-label="Historial de conteo"></section>
+        <div class="actions">
+          <button id="clearDay" type="button">
+            <span class="icon">⌫</span>
+            <span>Borrar día</span>
+          </button>
+        </div>
       </section>
 
       <section class="view" id="view-help">

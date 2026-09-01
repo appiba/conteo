@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from typing import Any
 from urllib import request
 
 
@@ -11,16 +11,24 @@ class SheetsClient:
         self.url = str(config.get("apps_script_url", "")).strip()
         self.camera_name = str(config.get("camera_name", "CAMARA_01"))
 
-    def send_entry(self, count: int) -> bool:
+    def send_entry(self, entry: dict[str, Any] | int) -> bool:
+        if isinstance(entry, int):
+            entry = {
+                "camera": self.camera_name,
+                "event": "ENTRY",
+                "total_count": int(entry),
+            }
+        return self._post({"type": "entry", "entry": entry})
+
+    def send_hourly_summary(self, summary: dict[str, Any] | None) -> bool:
+        if not summary:
+            return False
+        return self._post({"type": "hourly_summary", "summary": summary, "camera": self.camera_name})
+
+    def _post(self, payload: dict[str, Any]) -> bool:
         if not self.enabled or not self.url:
             return False
 
-        payload = {
-            "type": "entry",
-            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "camera": self.camera_name,
-            "count": int(count),
-        }
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             self.url,

@@ -14,6 +14,11 @@ const ENTRY_SEQUENCES = {
 const DETECTION_THRESHOLD = 0.30;
 const TRACK_MATCH_DISTANCE = 180;
 const TRACK_TTL_MS = 2600;
+const REPORT_TIMEZONE = "America/Guayaquil";
+const TIME_BUCKET_MINUTES = 60;
+const LIVE_RATE_WINDOW_MINUTES = 5;
+const GROUP_WINDOW_SECONDS = 2;
+const CAMERA_NAME = "ENTRADA_01";
 
 const state = {
   stream: null,
@@ -22,6 +27,10 @@ const state = {
   count: 0,
   realCount: 0,
   history: [],
+  events: [],
+  sessions: [],
+  days: {},
+  currentSessionId: null,
   tracks: new Map(),
   nextTrackId: 1,
   activeView: "count",
@@ -33,6 +42,11 @@ const state = {
     detectedPersons: 0,
     activeTracks: 0,
     entriesConfirmed: 0,
+    last1Minute: 0,
+    last5Minutes: 0,
+    liveRatePerMinute: 0,
+    projectedPeoplePerHour: 0,
+    currentBucket: "--",
   },
   config: cloneConfig(DEFAULT_CONFIG),
 };
@@ -57,6 +71,17 @@ const els = {
   historyList: document.querySelector("#historyList"),
   toggleCamera: document.querySelector("#toggleCamera"),
   resetCount: document.querySelector("#resetCount"),
+  clearDay: document.querySelector("#clearDay"),
+  currentBucketLabel: document.querySelector("#currentBucketLabel"),
+  currentBucketCount: document.querySelector("#currentBucketCount"),
+  liveRateValue: document.querySelector("#liveRateValue"),
+  hourProjectionValue: document.querySelector("#hourProjectionValue"),
+  last15Value: document.querySelector("#last15Value"),
+  last30Value: document.querySelector("#last30Value"),
+  maxGroupValue: document.querySelector("#maxGroupValue"),
+  avgGroupValue: document.querySelector("#avgGroupValue"),
+  peakHourLabel: document.querySelector("#peakHourLabel"),
+  averageHourLabel: document.querySelector("#averageHourLabel"),
   saveCalibration: document.querySelector("#saveCalibration"),
   restoreCalibration: document.querySelector("#restoreCalibration"),
   statusText: document.querySelector("#statusText"),
@@ -64,7 +89,7 @@ const els = {
   viewTitle: document.querySelector("#viewTitle"),
 };
 
-const todayKey = new Date().toISOString().slice(0, 10);
+let todayKey = guayaquilDateKey(new Date());
 
 loadState();
 wireUi();
@@ -81,12 +106,27 @@ function wireUi() {
   });
 
   els.resetCount.addEventListener("click", () => {
-    state.count = 0;
-    state.debugStats.entriesConfirmed = 0;
+    state.sessions.push({ type: "SESSION_RESET", timestamp: guayaquilIso(new Date()), timestampMs: Date.now() });
     state.tracks.clear();
-    pushHistory("Reinicio", state.count);
     saveState();
     renderAll();
+    setStatus("Sesion reiniciada");
+  });
+
+  els.clearDay.addEventListener("click", () => {
+    const confirmed = confirm("Esto borra los datos de HOY en este dispositivo. El historial de otros dias se conserva. ¿Continuar?");
+    if (!confirmed) return;
+    state.count = 0;
+    state.events = [];
+    state.sessions = [];
+    state.currentSessionId = null;
+    state.realCount = 0;
+    state.tracks.clear();
+    state.debugStats.entriesConfirmed = 0;
+    if (state.running) startSession(false);
+    saveState();
+    renderAll();
+    setStatus("Dia borrado");
   });
 
   els.realCount.addEventListener("input", () => {
@@ -139,6 +179,7 @@ async function startCamera() {
       video.play();
     });
     state.running = true;
+    startSession();
     els.videoEmpty.hidden = true;
     els.calibrationEmpty.hidden = true;
     els.toggleCamera.innerHTML = '<span class="icon">■</span><span>Detener</span>';
@@ -156,6 +197,7 @@ function stopCamera() {
   }
   state.stream = null;
   state.running = false;
+  endSession();
   els.videoEmpty.hidden = false;
   els.toggleCamera.innerHTML = '<span class="icon">▶</span><span>Iniciar</span>';
   setStatus("Detenido");
@@ -175,6 +217,7 @@ async function loadModel() {
 
 async function loop() {
   if (!state.running) return;
+  ensureCurrentDay();
   if (els.camera.videoWidth > 0) {
     const predictions = await state.model.detect(els.camera);
     const people = predictions
@@ -272,10 +315,8 @@ function updateCount(tracks) {
     orderedCrossings(track.previousPoint, track.point).forEach((crossing) => {
       console.debug(`Track ${track.id} crossed ${crossing}`);
       if (applyCrossing(stored, crossing)) {
-        state.count += 1;
-        state.debugStats.entriesConfirmed = state.count;
+        registerEntry(track);
         console.debug(`Track ${track.id} ENTRY CONFIRMED`);
-        pushHistory("Entrada", state.count);
         saveState();
         renderAll();
         setStatus("Entrada");
@@ -290,6 +331,313 @@ function logDebugCounts(detectedPersons, activeTracks) {
   state.lastDebugLogAt = now;
   console.debug(`DETECTED persons: ${detectedPersons}`);
   console.debug(`ACTIVE tracks: ${activeTracks}`);
+}
+
+function registerEntry(track) {
+  ensureCurrentDay();
+  const now = new Date();
+  const previous = state.events[state.events.length - 1];
+  const parts = guayaquilParts(now);
+  const event = {
+    timestamp: guayaquilIso(now),
+    timestampMs: now.getTime(),
+    date: formatDate(guayaquilDateKey(now)),
+    dateKey: guayaquilDateKey(now),
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second,
+    camera: CAMERA_NAME,
+    event: "ENTRY",
+    track_id: track.id,
+    age_group: track.ageGroup || "SIN_DETERMINAR",
+    age_confidence: Number(track.ageConfidence || 0),
+    total_count: state.events.length + 1,
+    seconds_since_previous_entry: previous ? round((now.getTime() - previous.timestampMs) / 1000, 3) : null,
+    hour_bucket: bucketLabel(now, TIME_BUCKET_MINUTES),
+    minute_bucket: minuteBucketLabel(now),
+    group_id: null,
+    group_size: 1,
+  };
+  state.events.push(event);
+  annotateGroups(state.events);
+  state.count = state.events.length;
+  state.debugStats.entriesConfirmed = state.count;
+}
+
+function ensureCurrentDay() {
+  const key = guayaquilDateKey(new Date());
+  if (key === todayKey) return;
+  endSession();
+  saveCurrentDay();
+  todayKey = key;
+  state.count = 0;
+  state.realCount = 0;
+  state.history = [];
+  state.events = [];
+  state.sessions = [];
+  state.currentSessionId = null;
+  state.tracks.clear();
+  state.debugStats.entriesConfirmed = 0;
+  if (state.running) startSession(false);
+  saveState();
+  renderAll();
+}
+
+function startSession(shouldSave = true) {
+  if (state.currentSessionId) return;
+  const now = new Date();
+  const session = {
+    id: state.sessions.length + 1,
+    camera: CAMERA_NAME,
+    start: guayaquilIso(now),
+    startMs: now.getTime(),
+    end: null,
+    endMs: null,
+  };
+  state.sessions.push(session);
+  state.currentSessionId = session.id;
+  if (shouldSave) saveState();
+}
+
+function endSession(shouldSave = true) {
+  if (!state.currentSessionId) return;
+  const now = new Date();
+  const session = state.sessions.find((item) => item.id === state.currentSessionId);
+  if (session && !session.end) {
+    session.end = guayaquilIso(now);
+    session.endMs = now.getTime();
+  }
+  state.currentSessionId = null;
+  if (shouldSave) saveState();
+}
+
+function saveCurrentDay() {
+  state.days[todayKey] = {
+    date: todayKey,
+    count: state.count,
+    realCount: state.realCount,
+    events: state.events,
+    sessions: state.sessions,
+    summary: buildDailySummary(state.events, state.sessions),
+  };
+}
+
+function buildDailySummary(events, sessions, now = new Date()) {
+  annotateGroups(events);
+  const bucketStarts = new Set();
+  events.forEach((event) => bucketStarts.add(bucketInfo(new Date(event.timestampMs), TIME_BUCKET_MINUTES).startMs));
+  sessions.forEach((session) => {
+    if (!session.startMs) return;
+    const endMs = session.endMs || now.getTime();
+    let cursor = bucketInfo(new Date(session.startMs), TIME_BUCKET_MINUTES).startMs;
+    const final = bucketInfo(new Date(endMs), TIME_BUCKET_MINUTES).startMs;
+    while (cursor <= final) {
+      bucketStarts.add(cursor);
+      cursor += TIME_BUCKET_MINUTES * 60000;
+    }
+  });
+  bucketStarts.add(bucketInfo(now, TIME_BUCKET_MINUTES).startMs);
+
+  const rows = Array.from(bucketStarts).sort((a, b) => a - b).map((startMs) => {
+    const endMs = startMs + TIME_BUCKET_MINUTES * 60000;
+    const bucketEvents = events.filter((event) => event.timestampMs >= startMs && event.timestampMs < endMs);
+    const ages = ageCounts(bucketEvents);
+    const minutes = minuteCounts(bucketEvents);
+    const coverageSeconds = coverageSecondsForPeriod(sessions, startMs, endMs, now.getTime());
+    const coveragePercentage = round(Math.min(100, (coverageSeconds / (TIME_BUCKET_MINUTES * 60)) * 100), 1);
+    const estimated = coverageSeconds > 0 && bucketEvents.length > 0
+      ? round(bucketEvents.length * ((TIME_BUCKET_MINUTES * 60) / coverageSeconds), 1)
+      : null;
+    return {
+      hour: bucketLabelFromStart(startMs, TIME_BUCKET_MINUTES),
+      count: bucketEvents.length,
+      ...ages,
+      age_percentages: agePercentages(ages, bucketEvents.length),
+      avg_seconds_between_entries: averageInterval(bucketEvents),
+      peak_people_per_minute: Math.max(0, ...Object.values(minutes)),
+      peak_minute: peakMinute(minutes),
+      coverage_seconds: round(coverageSeconds, 3),
+      coverage_percentage: coveragePercentage,
+      actual_count: bucketEvents.length,
+      estimated_full_hour_count: estimated,
+      ...groupStats(bucketEvents),
+      variation_percent: null,
+    };
+  });
+
+  rows.forEach((row, index) => {
+    if (index === 0) return;
+    const previous = rows[index - 1];
+    if (previous.count > 0) {
+      row.variation_percent = round(((row.count - previous.count) / previous.count) * 100, 1);
+    }
+  });
+
+  const recent1 = eventsSince(events, now, 1);
+  const recent5 = eventsSince(events, now, LIVE_RATE_WINDOW_MINUTES);
+  const recent15 = eventsSince(events, now, 15);
+  const recent30 = eventsSince(events, now, 30);
+  const rate = recent5.length / LIVE_RATE_WINDOW_MINUTES;
+  const currentBucket = bucketLabel(now, TIME_BUCKET_MINUTES);
+  const currentRow = rows.find((row) => row.hour === currentBucket) || null;
+  const ranked = [...rows].sort((a, b) => b.count - a.count);
+  const covered = rows.filter((row) => row.coverage_seconds > 0);
+
+  return {
+    timezone: REPORT_TIMEZONE,
+    total_today: events.length,
+    current_bucket: currentBucket,
+    current_bucket_count: currentRow ? currentRow.count : 0,
+    current_bucket_age_counts: currentRow ? ageCountsFromRow(currentRow) : emptyAgeCounts(),
+    last_1_minute: recent1.length,
+    last_5_minutes: recent5.length,
+    last_15_minutes: recent15.length,
+    last_30_minutes: recent30.length,
+    live_rate_per_minute: round(rate, 2),
+    projected_people_per_hour: round(rate * 60, 1),
+    peak_hour: ranked[0] || null,
+    second_peak_hour: ranked[1] || null,
+    lowest_hour: covered.length ? [...covered].sort((a, b) => a.count - b.count)[0] : null,
+    average_people_per_hour: covered.length ? round(covered.reduce((sum, row) => sum + row.count, 0) / covered.length, 1) : 0,
+    hourly_summary: rows,
+    ...groupStats(events),
+  };
+}
+
+function ageCounts(events) {
+  const counts = emptyAgeCounts();
+  events.forEach((event) => {
+    counts[ageField(event.age_group)] += 1;
+  });
+  return counts;
+}
+
+function emptyAgeCounts() {
+  return { children: 0, adolescents: 0, youth: 0, adults: 0, older_adults: 0, undetermined: 0 };
+}
+
+function ageCountsFromRow(row) {
+  return {
+    children: row.children,
+    adolescents: row.adolescents,
+    youth: row.youth,
+    adults: row.adults,
+    older_adults: row.older_adults,
+    undetermined: row.undetermined,
+  };
+}
+
+function ageField(value) {
+  const key = String(value || "SIN_DETERMINAR").toUpperCase().replaceAll(" ", "_");
+  const mapping = {
+    NINO: "children",
+    "NIÑO": "children",
+    CHILDREN: "children",
+    ADOLESCENTE: "adolescents",
+    TEEN: "adolescents",
+    JOVEN: "youth",
+    "JÓVEN": "youth",
+    YOUTH: "youth",
+    ADULTO: "adults",
+    ADULT: "adults",
+    ADULTO_MAYOR: "older_adults",
+    ADULTOS_MAYORES: "older_adults",
+    OLDER_ADULT: "older_adults",
+  };
+  return mapping[key] || "undetermined";
+}
+
+function agePercentages(counts, total) {
+  const percentages = {};
+  Object.entries(counts).forEach(([key, value]) => {
+    percentages[key] = total > 0 ? round((value / total) * 100, 1) : 0;
+  });
+  return percentages;
+}
+
+function minuteCounts(events) {
+  return events.reduce((counts, event) => {
+    const key = event.minute_bucket || minuteBucketLabel(new Date(event.timestampMs));
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function peakMinute(counts) {
+  const entries = Object.entries(counts);
+  if (!entries.length) return null;
+  return entries.sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function averageInterval(events) {
+  const intervals = events
+    .map((event) => event.seconds_since_previous_entry)
+    .filter((value) => Number.isFinite(value));
+  if (!intervals.length) return null;
+  return round(intervals.reduce((sum, value) => sum + value, 0) / intervals.length, 3);
+}
+
+function eventsSince(events, now, minutes) {
+  const startMs = now.getTime() - minutes * 60000;
+  return events.filter((event) => event.timestampMs >= startMs);
+}
+
+function coverageSecondsForPeriod(sessions, startMs, endMs, nowMs) {
+  return sessions.reduce((total, session) => {
+    if (!session.startMs) return total;
+    const sessionEndMs = session.endMs || nowMs;
+    const overlapStart = Math.max(startMs, session.startMs);
+    const overlapEnd = Math.min(endMs, sessionEndMs);
+    return overlapEnd > overlapStart ? total + (overlapEnd - overlapStart) / 1000 : total;
+  }, 0);
+}
+
+function annotateGroups(events) {
+  const ordered = [...events].sort((a, b) => a.timestampMs - b.timestampMs);
+  let group = [];
+  let groupStart = 0;
+  let groupId = 0;
+
+  const flush = () => {
+    if (!group.length) return;
+    groupId += 1;
+    group.forEach((event) => {
+      event.group_id = groupId;
+      event.group_size = group.length;
+    });
+    group = [];
+  };
+
+  ordered.forEach((event) => {
+    if (!group.length) {
+      group = [event];
+      groupStart = event.timestampMs;
+      return;
+    }
+    if ((event.timestampMs - groupStart) / 1000 <= GROUP_WINDOW_SECONDS) {
+      group.push(event);
+    } else {
+      flush();
+      group = [event];
+      groupStart = event.timestampMs;
+    }
+  });
+  flush();
+}
+
+function groupStats(events) {
+  const groups = new Map();
+  events.forEach((event) => {
+    if (!event.group_id) return;
+    groups.set(event.group_id, event.group_size || 1);
+  });
+  const sizes = Array.from(groups.values());
+  if (!sizes.length) return { groups_count: 0, average_group_size: 0, max_group_size: 0 };
+  return {
+    groups_count: sizes.length,
+    average_group_size: round(sizes.reduce((sum, value) => sum + value, 0) / sizes.length, 2),
+    max_group_size: Math.max(...sizes),
+  };
 }
 
 function orderedCrossings(previous, current) {
@@ -502,20 +850,28 @@ function setStatus(text) {
 }
 
 function renderAll() {
+  state.count = state.events.length;
+  const summary = buildDailySummary(state.events, state.sessions);
   els.countValue.textContent = state.count;
   els.todayLabel.textContent = formatDate(todayKey);
   els.historyTotal.textContent = state.count;
   els.historyDate.textContent = formatDate(todayKey);
   els.realCount.value = state.realCount;
-  renderHistory();
-  renderDebugMetrics();
+  renderHistory(summary);
+  renderDebugMetrics(summary);
+  renderLiveSummary(summary);
   drawCalibration();
 }
 
-function renderDebugMetrics() {
+function renderDebugMetrics(summary = buildDailySummary(state.events, state.sessions)) {
   els.detectedCount.textContent = state.debugStats.detectedPersons;
   els.activeTrackCount.textContent = state.debugStats.activeTracks;
   state.debugStats.entriesConfirmed = state.count;
+  state.debugStats.last1Minute = summary.last_1_minute;
+  state.debugStats.last5Minutes = summary.last_5_minutes;
+  state.debugStats.liveRatePerMinute = summary.live_rate_per_minute;
+  state.debugStats.projectedPeoplePerHour = summary.projected_people_per_hour;
+  state.debugStats.currentBucket = summary.current_bucket;
   if (state.realCount > 0) {
     const accuracy = Math.min(999.9, (state.count / state.realCount) * 100);
     els.accuracyValue.textContent = `${accuracy.toFixed(1)}%`;
@@ -524,19 +880,57 @@ function renderDebugMetrics() {
   }
 }
 
-function renderHistory() {
-  const rows = state.history.slice(-6).reverse();
+function renderLiveSummary(summary) {
+  els.currentBucketLabel.textContent = summary.current_bucket;
+  els.currentBucketCount.textContent = `${summary.current_bucket_count} ingresos`;
+  els.liveRateValue.textContent = `${summary.live_rate_per_minute}/min`;
+  els.hourProjectionValue.textContent = `Proyección ${summary.projected_people_per_hour}/hora`;
+  els.last15Value.textContent = summary.last_15_minutes;
+  els.last30Value.textContent = `Últimos 30 min: ${summary.last_30_minutes}`;
+  els.maxGroupValue.textContent = summary.max_group_size;
+  els.avgGroupValue.textContent = `Promedio ${summary.average_group_size}`;
+  els.peakHourLabel.textContent = summary.peak_hour
+    ? `Hora pico: ${summary.peak_hour.hour} · ${summary.peak_hour.count}`
+    : "Hora pico: --";
+  els.averageHourLabel.textContent = `Promedio: ${summary.average_people_per_hour}/hora`;
+}
+
+function renderHistory(summary = buildDailySummary(state.events, state.sessions)) {
+  const rows = summary.hourly_summary.filter((item) => item.count > 0 || item.coverage_seconds > 0).reverse();
   els.historyList.innerHTML = rows.length
-    ? rows.map((item) => `<div class="history-row"><span>${item.label}<br><small>${item.time}</small></span><strong>${item.total}</strong></div>`).join("")
-    : '<div class="history-row"><span>Sin entradas todavia</span><strong>0</strong></div>';
+    ? rows.map((item) => {
+      const variation = item.variation_percent === null ? "" : ` · ${item.variation_percent > 0 ? "+" : ""}${item.variation_percent}%`;
+      const estimate = item.estimated_full_hour_count === null ? "" : ` · Est. ${item.estimated_full_hour_count}`;
+      return `<div class="history-row"><span>${item.hour}<br><small>Cobertura ${item.coverage_percentage}%${variation}${estimate}</small></span><strong>${item.count}</strong></div>`;
+    }).join("")
+    : '<div class="history-row"><span>Sin entradas todavia<br><small>La camara aun no registra ingresos.</small></span><strong>0</strong></div>';
 }
 
 function loadState() {
   const saved = JSON.parse(localStorage.getItem("afluencia-counter") || "{}");
-  if (saved.date === todayKey) {
-    state.count = Number(saved.count || 0);
-    state.realCount = Number(saved.realCount || 0);
-    state.history = Array.isArray(saved.history) ? saved.history : [];
+  state.days = saved.days && typeof saved.days === "object" ? saved.days : {};
+  if (saved.date && saved.date !== todayKey && !state.days[saved.date]) {
+    state.days[saved.date] = {
+      date: saved.date,
+      count: Number(saved.count || 0),
+      realCount: Number(saved.realCount || 0),
+      events: Array.isArray(saved.events) ? saved.events : [],
+      sessions: Array.isArray(saved.sessions) ? saved.sessions : [],
+      summary: null,
+    };
+  }
+
+  const today = state.days[todayKey] || (saved.date === todayKey ? saved : null);
+  if (today) {
+    state.events = normalizeEvents(today.events || []);
+    if (!state.events.length && Number(today.count || 0) > 0) {
+      state.events = createLegacyEvents(Number(today.count || 0), todayKey);
+    }
+    annotateGroups(state.events);
+    state.sessions = normalizeSessions(today.sessions || []);
+    state.count = state.events.length || Number(today.count || 0);
+    state.realCount = Number(today.realCount || 0);
+    state.history = Array.isArray(today.history) ? today.history : [];
   }
   if (saved.config) {
     state.config = normalizeConfig(saved.config);
@@ -544,12 +938,17 @@ function loadState() {
 }
 
 function saveState() {
+  saveCurrentDay();
   localStorage.setItem("afluencia-counter", JSON.stringify({
     date: todayKey,
     count: state.count,
     realCount: state.realCount,
+    events: state.events,
+    sessions: state.sessions,
+    days: state.days,
     history: state.history,
     config: state.config,
+    timezone: REPORT_TIMEZONE,
   }));
 }
 
@@ -640,9 +1039,136 @@ function pointInPolygon(point, polygon) {
   return inside;
 }
 
+function guayaquilParts(date) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: REPORT_TIMEZONE,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+function guayaquilDateKey(date) {
+  const parts = guayaquilParts(date);
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function guayaquilIso(date) {
+  const parts = guayaquilParts(date);
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}T${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}-05:00`;
+}
+
+function guayaquilLocalMs(parts) {
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second || 0, 0) + 5 * 60 * 60000;
+}
+
+function bucketInfo(date, minutes) {
+  const parts = guayaquilParts(date);
+  const bucketMinute = minutes < 60 ? Math.floor(parts.minute / minutes) * minutes : 0;
+  const startParts = { ...parts, minute: bucketMinute, second: 0 };
+  const startMs = guayaquilLocalMs(startParts);
+  return { startMs, endMs: startMs + minutes * 60000 };
+}
+
+function bucketLabel(date, minutes) {
+  return bucketLabelFromStart(bucketInfo(date, minutes).startMs, minutes);
+}
+
+function bucketLabelFromStart(startMs, minutes) {
+  const start = guayaquilParts(new Date(startMs));
+  const end = guayaquilParts(new Date(startMs + minutes * 60000 - 60000));
+  return `${pad2(start.hour)}:${pad2(start.minute)}-${pad2(end.hour)}:${pad2(end.minute)}`;
+}
+
+function minuteBucketLabel(date) {
+  const start = guayaquilParts(date);
+  const end = guayaquilParts(new Date(bucketInfo(date, 1).endMs));
+  return `${pad2(start.hour)}:${pad2(start.minute)}-${pad2(end.hour)}:${pad2(end.minute)}`;
+}
+
 function formatDate(value) {
   const [year, month, day] = value.split("-");
   return `${day}/${month}/${year}`;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function round(value, digits = 1) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value || 0) * factor) / factor;
+}
+
+function normalizeEvents(events) {
+  return Array.isArray(events)
+    ? events.map((event, index) => ({
+      ...event,
+      timestampMs: Number(event.timestampMs || Date.parse(event.timestamp || new Date())),
+      total_count: Number(event.total_count || index + 1),
+      age_group: event.age_group || "SIN_DETERMINAR",
+      age_confidence: Number(event.age_confidence || 0),
+      group_id: event.group_id || null,
+      group_size: Number(event.group_size || 1),
+    }))
+    : [];
+}
+
+function normalizeSessions(sessions) {
+  return Array.isArray(sessions)
+    ? sessions.map((session, index) => ({
+      ...session,
+      id: Number(session.id || index + 1),
+      startMs: Number(session.startMs || Date.parse(session.start || new Date())),
+      endMs: session.endMs ? Number(session.endMs) : null,
+      camera: session.camera || CAMERA_NAME,
+    }))
+    : [];
+}
+
+function createLegacyEvents(count, dateKey) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const baseMs = guayaquilLocalMs({ year, month, day, hour: 0, minute: 0, second: 0 });
+  const events = [];
+  for (let index = 0; index < count; index++) {
+    const timestampMs = baseMs + index * 1000;
+    const timestamp = guayaquilIso(new Date(timestampMs));
+    events.push({
+      timestamp,
+      timestampMs,
+      date: formatDate(dateKey),
+      dateKey,
+      hour: 0,
+      minute: 0,
+      second: index % 60,
+      camera: CAMERA_NAME,
+      event: "ENTRY",
+      track_id: null,
+      age_group: "SIN_DETERMINAR",
+      age_confidence: 0,
+      total_count: index + 1,
+      seconds_since_previous_entry: index === 0 ? null : 1,
+      hour_bucket: "00:00-00:59",
+      minute_bucket: "00:00-00:01",
+      group_id: null,
+      group_size: 1,
+    });
+  }
+  annotateGroups(events);
+  return events;
 }
 
 function maybeSendFrameToLocalProcessor() {

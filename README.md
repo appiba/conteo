@@ -75,6 +75,14 @@ La configuracion esta ajustada para priorizar precision de conteo sobre FPS: `co
 
 En el enlace web tambien aparece un campo `Conteo real` para pruebas manuales. Escribe cuantas personas entraron realmente y la app calcula la precision contra el conteo del sistema.
 
+## Registro horario y ritmo
+
+Cada entrada confirmada guarda un evento anonimo con timestamp en `America/Guayaquil`, camara, `track_id` temporal, grupo etario si esta disponible, total acumulado, intervalo contra la entrada anterior, franja horaria y minuto. No se guardan rostros, fotos ni video.
+
+El sistema calcula en tiempo real total del dia, conteo por franja, ultimos 5/15/30 minutos, ritmo personas/minuto, proyeccion personas/hora, hora pico, menor hora con camara activa, cobertura de camara por franja, estimado de hora completa, maximo por minuto y tamano promedio/maximo de grupos.
+
+El boton `REINICIAR` solo reinicia la sesion de conteo y conserva el historial. Para borrar datos del dia se debe usar la accion de borrado con confirmacion.
+
 ## Controles
 
 - `Espacio`: iniciar/detener conteo.

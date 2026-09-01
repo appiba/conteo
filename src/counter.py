@@ -17,6 +17,9 @@ class CounterEvent:
     track_id: int
     kind: str
     message: str
+    age_group: str = "SIN_DETERMINAR"
+    age_confidence: float = 0.0
+    confidence: float = 0.0
 
 
 @dataclass
@@ -69,7 +72,7 @@ class EntryCounter:
             memory.last_seen = frame_index
 
             for crossing in crossings:
-                counted = self._apply_crossing(memory, person.track_id, crossing, events)
+                counted = self._apply_crossing(memory, person, crossing, events)
                 if counted:
                     increment += 1
                     self.total += 1
@@ -98,10 +101,11 @@ class EntryCounter:
     def _apply_crossing(
         self,
         memory: TrackMemory,
-        track_id: int,
+        person: TrackedPerson,
         crossing: str,
         events: list[CounterEvent],
     ) -> bool:
+        track_id = person.track_id
         if memory.counted:
             return False
 
@@ -115,23 +119,59 @@ class EntryCounter:
 
         if memory.phase == "NEW":
             memory.phase = crossing_phase
-            events.append(CounterEvent(track_id, f"crossed_{crossing.lower()}", f"ID {track_id}: {crossing} DETECTADA"))
+            events.append(
+                CounterEvent(
+                    track_id=track_id,
+                    kind=f"crossed_{crossing.lower()}",
+                    message=f"ID {track_id}: {crossing} DETECTADA",
+                    age_group=person.age_group,
+                    age_confidence=person.age_confidence,
+                    confidence=person.confidence,
+                )
+            )
             return False
 
         if memory.phase == crossing_phase:
             memory.phase = "NEW"
-            events.append(CounterEvent(track_id, "backed_out", f"ID {track_id}: regreso antes de completar cruce"))
+            events.append(
+                CounterEvent(
+                    track_id=track_id,
+                    kind="backed_out",
+                    message=f"ID {track_id}: regreso antes de completar cruce",
+                    age_group=person.age_group,
+                    age_confidence=person.age_confidence,
+                    confidence=person.confidence,
+                )
+            )
             return False
 
         if memory.phase == first_phase and crossing == second_line:
             memory.phase = "COUNTED"
             memory.counted = True
-            events.append(CounterEvent(track_id, "entry", f"ID {track_id}: ENTRADA CONFIRMADA"))
+            events.append(
+                CounterEvent(
+                    track_id=track_id,
+                    kind="entry",
+                    message=f"ID {track_id}: ENTRADA CONFIRMADA",
+                    age_group=person.age_group,
+                    age_confidence=person.age_confidence,
+                    confidence=person.confidence,
+                )
+            )
             return True
 
         if memory.phase == second_phase and crossing == first_line:
             memory.phase = "EXITED"
-            events.append(CounterEvent(track_id, "exit", f"ID {track_id}: salida detectada"))
+            events.append(
+                CounterEvent(
+                    track_id=track_id,
+                    kind="exit",
+                    message=f"ID {track_id}: salida detectada",
+                    age_group=person.age_group,
+                    age_confidence=person.age_confidence,
+                    confidence=person.confidence,
+                )
+            )
             return False
 
         return False

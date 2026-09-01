@@ -32,6 +32,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "roi": [],
     "track_ttl_frames": 70,
     "entry_direction": "LEFT_TO_RIGHT",
+    "report_timezone": "America/Guayaquil",
+    "time_bucket_minutes": 60,
+    "live_rate_window_minutes": 5,
+    "group_window_seconds": 2.0,
     "fallback_tracker_max_distance": 160.0,
     "fallback_tracker_max_missing": 45,
     "frame_width": 1280,
@@ -96,6 +100,9 @@ def validate_config(config: dict[str, Any]) -> None:
     _require_int(config, "phone_server_port", minimum=1, maximum=65535)
     _require_int(config, "track_ttl_frames", minimum=1)
     _require_int(config, "debug_log_every_frames", minimum=1)
+    _require_int(config, "time_bucket_minutes", minimum=1)
+    _require_int(config, "live_rate_window_minutes", minimum=1)
+    _require_number(config, "group_window_seconds", minimum=0.1)
     _require_number(config, "fallback_tracker_max_distance", minimum=1.0)
     _require_int(config, "fallback_tracker_max_missing", minimum=1)
     if config.get("entry_direction") not in ENTRY_DIRECTIONS:

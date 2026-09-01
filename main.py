@@ -152,7 +152,7 @@ def main() -> int:
 
     print_runtime_help(source)
 
-    storage = CountStorage(Path("data/count.json"))
+    storage = CountStorage(Path("data/count.json"), config)
     counter = EntryCounter(
         initial_count=storage.count,
         ttl_frames=int(config.get("track_ttl_frames", 45)),
@@ -183,8 +183,24 @@ def main() -> int:
     last_debug_log_frame = -999999
     debug_metrics = {"detected_persons": 0, "active_tracks": 0, "entries_confirmed": storage.count}
 
+    def set_running(value: bool) -> None:
+        nonlocal running
+        if running == value:
+            return
+        running = value
+        if running:
+            storage.start_session()
+        else:
+            storage.end_session()
+
+    if running:
+        storage.start_session()
+
     try:
         while True:
+            if storage.rollover_if_needed():
+                counter.reset(storage.count)
+
             frame_result = source.read()
             if frame_result.frame is None:
                 frame = make_blank_frame(
@@ -206,7 +222,7 @@ def main() -> int:
                         print(f"YOLO listo. Dispositivo: {detector.device}")
                     except DetectorError as exc:
                         detector_error = str(exc)
-                        running = False
+                        set_running(False)
                 if detector is not None:
                     try:
                         detections = detector.detect(frame, calibration.roi)
@@ -214,7 +230,7 @@ def main() -> int:
                         debug_metrics["active_tracks"] = detector.last_stats.active_tracks
                     except DetectorError as exc:
                         detector_error = str(exc)
-                        running = False
+                        set_running(False)
 
             if running and not calibration.active and detections:
                 update = counter.update(detections, calibration.line_a, calibration.line_b, frame_index)
@@ -223,14 +239,28 @@ def main() -> int:
                     for event in update.events:
                         print(format_event_log(event))
                 if update.increment:
-                    storage.increment(update.increment)
+                    entry_payloads = []
+                    for event in update.events:
+                        if event.kind != "entry":
+                            continue
+                        entry_payload = storage.record_entry(event, camera=str(config.get("camera_name", "CAMARA_01")))
+                        entry_payloads.append(entry_payload)
+                        sheets.send_entry(entry_payload)
                     counter.set_total(storage.count)
-                    sheets.send_entry(storage.count)
+                    current_summary = storage.current_hour_summary()
+                    sheets.send_hourly_summary(current_summary)
             elif not detections:
                 last_events = []
 
+            traffic_summary = storage.summary()
             debug_metrics["active_tracks"] = len(detections)
-            debug_metrics["entries_confirmed"] = counter.total
+            debug_metrics["entries_confirmed"] = storage.count
+            debug_metrics["last_1_minute"] = traffic_summary["last_1_minute"]
+            debug_metrics["last_5_minutes"] = traffic_summary["last_5_minutes"]
+            debug_metrics["live_rate_per_minute"] = traffic_summary["live_rate_per_minute"]
+            debug_metrics["projected_people_per_hour"] = traffic_summary["projected_people_per_hour"]
+            debug_metrics["current_bucket"] = traffic_summary["current_bucket"]
+            debug_metrics["current_bucket_count"] = traffic_summary["current_bucket_count"]
             if (
                 bool(config.get("debug", True))
                 and detector is not None
@@ -238,12 +268,17 @@ def main() -> int:
             ):
                 print(f"DETECTED persons: {debug_metrics['detected_persons']}")
                 print(f"ACTIVE tracks: {debug_metrics['active_tracks']}")
+                print(f"Last 1 min: {debug_metrics['last_1_minute']}")
+                print(f"Last 5 min: {debug_metrics['last_5_minutes']}")
+                print(f"Rate: {debug_metrics['live_rate_per_minute']}/min")
+                print(f"Projection: {debug_metrics['projected_people_per_hour']}/hour")
+                print(f"Bucket: {debug_metrics['current_bucket']}")
                 last_debug_log_frame = frame_index
 
             canvas = ui.draw(
                 frame=frame,
                 detections=detections,
-                total=counter.total,
+                total=storage.count,
                 running=running,
                 calibration=calibration,
                 events=last_events,
@@ -260,21 +295,21 @@ def main() -> int:
             if key in (27, ord("q"), ord("Q")):
                 break
             if key == ord(" "):
-                running = not running
+                set_running(not running)
             elif key in (ord("c"), ord("C")):
                 calibration.toggle()
             elif key == ord("0"):
-                storage.reset()
+                storage.reset_session_counter()
                 counter.reset(storage.count)
             elif key != 255:
                 calibration.handle_key(key)
 
             if action == "toggle_run":
-                running = not running
+                set_running(not running)
             elif action == "toggle_calibrate":
                 calibration.toggle()
             elif action == "reset_counter":
-                storage.reset()
+                storage.reset_session_counter()
                 counter.reset(storage.count)
             elif action == "config":
                 print_runtime_help(source)
@@ -283,6 +318,7 @@ def main() -> int:
             if not frame_result.ok:
                 time.sleep(0.15)
     finally:
+        storage.end_session()
         save_config(config, config_path)
         source.release()
         cv2.destroyAllWindows()

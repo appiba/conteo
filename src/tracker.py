@@ -11,6 +11,8 @@ class TrackedPerson:
     track_id: int
     box: tuple[float, float, float, float]
     confidence: float = 0.0
+    age_group: str = "SIN_DETERMINAR"
+    age_confidence: float = 0.0
 
     @property
     def bottom_center(self) -> Point:
