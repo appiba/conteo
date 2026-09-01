@@ -28,6 +28,7 @@ const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.05;
+const CAMERA_START_TIMEOUT_MS = 12000;
 
 const state = {
   stream: null,
@@ -174,6 +175,14 @@ function wireUi() {
     });
   }
 
+  if (els.openExternalBrowser) {
+    els.openExternalBrowser.addEventListener("click", (event) => {
+      if (els.openExternalBrowser.dataset.action !== "retry") return;
+      event.preventDefault();
+      startCamera();
+    });
+  }
+
   els.saveCalibration.addEventListener("click", () => {
     ensureCalibrationDraft();
     const validation = validateCalibration(state.calibrationDraft);
@@ -315,28 +324,86 @@ async function requestCameraStream() {
     throw cameraStartError("unsupported", "Este navegador no permite abrir la camara desde la pagina.");
   }
 
-  const attempts = [
-    {
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    },
-    { audio: false, video: { facingMode: { ideal: "environment" } } },
-    { audio: false, video: true },
-  ];
+  const attempts = await cameraConstraintAttempts();
   let lastError = null;
   for (const constraints of attempts) {
     try {
-      return await navigator.mediaDevices.getUserMedia(constraints);
+      return await getUserMediaWithTimeout(constraints);
     } catch (error) {
       lastError = error;
       if (isPermissionError(error)) break;
     }
   }
   throw lastError || cameraStartError("unknown", "No se pudo abrir la camara.");
+}
+
+async function cameraConstraintAttempts() {
+  const desktop = !isMobileDevice();
+  const compact = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 } };
+  const hd = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } };
+  const attempts = desktop
+    ? [
+      { audio: false, video: hd },
+      { audio: false, video: compact },
+      { audio: false, video: true },
+      { audio: false, video: { facingMode: { ideal: "environment" }, ...compact } },
+    ]
+    : [
+      { audio: false, video: { facingMode: { ideal: "environment" }, ...hd } },
+      { audio: false, video: { facingMode: { ideal: "environment" }, ...compact } },
+      { audio: false, video: { facingMode: "user", ...compact } },
+      { audio: false, video: true },
+    ];
+
+  const devices = await listVideoInputDevices();
+  devices.forEach((device) => {
+    if (!device.deviceId) return;
+    attempts.push({
+      audio: false,
+      video: {
+        deviceId: { exact: device.deviceId },
+        ...compact,
+      },
+    });
+  });
+  return attempts;
+}
+
+async function listVideoInputDevices() {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") return [];
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((device) => device.kind === "videoinput");
+  } catch (_error) {
+    return [];
+  }
+}
+
+function getUserMediaWithTimeout(constraints) {
+  let timer = null;
+  let timedOut = false;
+  const mediaPromise = navigator.mediaDevices.getUserMedia(constraints);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(cameraStartError("timeout", "Timeout starting video source"));
+    }, CAMERA_START_TIMEOUT_MS);
+  });
+  mediaPromise.then((stream) => {
+    if (timedOut) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+  }).catch(() => {});
+  return Promise.race([
+    mediaPromise,
+    timeout,
+  ]).then((stream) => {
+    clearTimeout(timer);
+    return stream;
+  }).catch((error) => {
+    clearTimeout(timer);
+    throw error;
+  });
 }
 
 function attachCameraStream(stream) {
@@ -368,6 +435,11 @@ function isLikelyInAppBrowser() {
   return /WhatsApp|FBAN|FBAV|Instagram|Line|MicroMessenger|Snapchat|TikTok/i.test(ua);
 }
 
+function isMobileDevice() {
+  const ua = navigator.userAgent || "";
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua));
+}
+
 function cameraFailureInfo(error) {
   const name = error && error.name;
   const message = error && error.message ? error.message : "";
@@ -384,6 +456,7 @@ function cameraFailureInfo(error) {
       title: "Abre en Safari/Chrome",
       message: "Este navegador no deja usar la camara desde aqui.",
       status: "Navegador",
+      action: "external",
       help: "Toca Abrir en Safari/Chrome o copia el link y pegalo fuera de WhatsApp.",
     };
   }
@@ -392,6 +465,7 @@ function cameraFailureInfo(error) {
       title: "Camara abierta, falta IA",
       message: "No cargo el modelo de deteccion. Revisa internet y vuelve a iniciar.",
       status: "Sin IA",
+      action: "retry",
       help: "La camara funciona, pero falta cargar la deteccion de personas.",
     };
   }
@@ -400,7 +474,17 @@ function cameraFailureInfo(error) {
       title: "Abre en Safari/Chrome",
       message: "WhatsApp puede bloquear la camara. Abre este link en Safari o Chrome.",
       status: "Abrir Safari",
+      action: "external",
       help: "Toca Abrir en Safari/Chrome. Si no abre, copia el link y pegalo en Safari.",
+    };
+  }
+  if ((error && error.cameraReason === "timeout") || /timeout starting video source/i.test(message)) {
+    return {
+      title: "No arranco la camara",
+      message: "La compu no pudo iniciar la camara seleccionada.",
+      status: "Reintentar",
+      action: "retry",
+      help: "Cierra otras apps que usen camara y presiona Reintentar camara.",
     };
   }
   if (isPermissionError(error)) {
@@ -408,6 +492,7 @@ function cameraFailureInfo(error) {
       title: "Permite la camara",
       message: "El navegador tiene bloqueado el permiso de camara para esta pagina.",
       status: "Permiso",
+      action: isMobileDevice() ? "external" : "retry",
       help: "En iPhone toca el icono del sitio en la barra de Safari, permite Camara y vuelve a presionar Iniciar.",
     };
   }
@@ -416,6 +501,7 @@ function cameraFailureInfo(error) {
       title: "No encontre camara",
       message: "El navegador no ve una camara disponible.",
       status: "Sin camara",
+      action: "retry",
       help: "Cierra otras apps que usen camara y vuelve a intentarlo.",
     };
   }
@@ -424,6 +510,7 @@ function cameraFailureInfo(error) {
       title: "Camara ocupada",
       message: "Otra app o pestaña esta usando la camara.",
       status: "Ocupada",
+      action: "retry",
       help: "Cierra camara, videollamadas u otras pestañas y vuelve a iniciar.",
     };
   }
@@ -431,6 +518,7 @@ function cameraFailureInfo(error) {
     title: "No pude abrir la camara",
     message: "Revisa el permiso de camara y vuelve a intentar.",
     status: "Sin camara",
+    action: isMobileDevice() ? "external" : "retry",
     help: message || "Abre el link en Safari o Chrome y permite la camara.",
   };
 }
@@ -445,13 +533,23 @@ function setCameraEmpty(title, message) {
 function resetCameraEmpty() {
   setCameraEmpty("Listo para contar", "Presiona INICIAR y permite la camara.");
   if (els.cameraFix) els.cameraFix.hidden = true;
+  if (els.openExternalBrowser) {
+    els.openExternalBrowser.dataset.action = "external";
+    els.openExternalBrowser.textContent = "Abrir en Safari/Chrome";
+    els.openExternalBrowser.href = externalBrowserUrl();
+    els.openExternalBrowser.target = "_blank";
+  }
 }
 
 function showCameraFix(info) {
   if (!els.cameraFix) return;
   els.cameraFix.hidden = false;
   if (els.openExternalBrowser) {
-    els.openExternalBrowser.href = externalBrowserUrl();
+    const retry = info.action === "retry";
+    els.openExternalBrowser.dataset.action = retry ? "retry" : "external";
+    els.openExternalBrowser.textContent = retry ? "Reintentar camara" : "Abrir en Safari/Chrome";
+    els.openExternalBrowser.href = retry ? "#" : externalBrowserUrl();
+    els.openExternalBrowser.target = retry ? "" : "_blank";
   }
   setCameraHelpText(info.help);
 }
