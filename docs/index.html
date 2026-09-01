@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app.js?v=camera-startup-20260901"></script>
+  <script defer src="./app.js?v=camera-framing-20260901"></script>
 </head>
 <body>
   <main class="shell">
@@ -55,6 +55,14 @@
           <div>
             <span>Precision</span>
             <strong id="accuracyValue">--</strong>
+          </div>
+          <div>
+            <span>Resolucion solicitada</span>
+            <strong class="metric-text" id="requestedResolution">1280 x 720</strong>
+          </div>
+          <div>
+            <span>Resolucion real</span>
+            <strong class="metric-text" id="realResolution">--</strong>
           </div>
         </section>
 
@@ -133,6 +141,81 @@
             </div>
           </div>
           <div class="calibration-status" id="calibrationStatus">Ajusta A, B o Zona y guarda.</div>
+        </section>
+
+        <section class="camera-panel" aria-label="Configuracion de camara">
+          <div class="camera-panel-head">
+            <span>Camara / Encuadre</span>
+            <strong id="cameraRealValue">Real: --</strong>
+          </div>
+          <div class="camera-grid">
+            <label class="camera-field wide">
+              <span>Camara</span>
+              <select id="cameraDevice">
+                <option value="">Auto</option>
+              </select>
+            </label>
+            <label class="camera-field">
+              <span>Resolucion</span>
+              <select id="cameraResolution">
+                <option value="auto">Auto</option>
+                <option value="640x480">640 x 480</option>
+                <option value="1280x720" selected>1280 x 720</option>
+                <option value="1920x1080">1920 x 1080</option>
+              </select>
+            </label>
+            <label class="camera-field">
+              <span>Formato</span>
+              <select id="cameraAspectRatio">
+                <option value="auto" selected>Auto</option>
+                <option value="16:9">16:9</option>
+                <option value="4:3">4:3</option>
+              </select>
+            </label>
+            <label class="camera-field">
+              <span>FPS</span>
+              <select id="cameraFps">
+                <option value="auto">Auto</option>
+                <option value="15" selected>15 FPS</option>
+                <option value="20">20 FPS</option>
+                <option value="25">25 FPS</option>
+                <option value="30">30 FPS</option>
+              </select>
+            </label>
+            <label class="camera-field">
+              <span>Encuadre</span>
+              <select id="cameraFitMode">
+                <option value="fit" selected>Mostrar todo / FIT</option>
+                <option value="cover">Llenar / COVER</option>
+              </select>
+            </label>
+          </div>
+          <div class="camera-readout">
+            <span>Solicitada</span>
+            <strong id="cameraRequestedValue">1280 x 720</strong>
+          </div>
+          <label class="range-field">
+            <span>Zoom <strong id="cameraZoomValue">No disponible</strong></span>
+            <input id="cameraZoom" type="range" min="1" max="1" step="0.1" value="1" disabled>
+            <small id="cameraZoomStatus">Abre la camara para leer capacidades reales.</small>
+          </label>
+          <label class="range-field">
+            <span>Escala <strong id="digitalScaleValue">100%</strong></span>
+            <input id="digitalScale" type="range" min="1" max="2.5" step="0.01" value="1">
+          </label>
+          <label class="range-field">
+            <span>Posicion X <strong id="digitalOffsetXValue">0</strong></span>
+            <input id="digitalOffsetX" type="range" min="-50" max="50" step="1" value="0">
+          </label>
+          <label class="range-field">
+            <span>Posicion Y <strong id="digitalOffsetYValue">0</strong></span>
+            <input id="digitalOffsetY" type="range" min="-50" max="50" step="1" value="0">
+          </label>
+          <div class="camera-actions">
+            <button id="wideView" type="button">Vista mas amplia</button>
+            <button id="recommendedCamera" type="button">Configuracion recomendada</button>
+            <button id="resetFraming" type="button">Restablecer encuadre</button>
+          </div>
         </section>
 
         <div class="actions">

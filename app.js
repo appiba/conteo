@@ -1,3 +1,24 @@
+const CAMERA_RESOLUTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "640x480", label: "640 x 480" },
+  { value: "1280x720", label: "1280 x 720" },
+  { value: "1920x1080", label: "1920 x 1080" },
+];
+
+const CAMERA_ASPECT_RATIOS = ["auto", "16:9", "4:3"];
+const CAMERA_FPS_OPTIONS = ["auto", "15", "20", "25", "30"];
+const CAMERA_CONFIG_FIELDS = [
+  "cameraResolution",
+  "cameraAspectRatio",
+  "cameraFps",
+  "cameraFitMode",
+  "cameraZoom",
+  "digitalScale",
+  "digitalOffsetX",
+  "digitalOffsetY",
+  "cameraDeviceId",
+];
+
 const DEFAULT_CONFIG = {
   lineA: [{ x: 0.38, y: 0.12 }, { x: 0.38, y: 0.92 }],
   lineB: [{ x: 0.62, y: 0.12 }, { x: 0.62, y: 0.92 }],
@@ -12,6 +33,15 @@ const DEFAULT_CONFIG = {
   sessionId: null,
   deviceId: null,
   zoneId: null,
+  cameraResolution: "1280x720",
+  cameraAspectRatio: "auto",
+  cameraFps: "15",
+  cameraFitMode: "fit",
+  cameraZoom: null,
+  digitalScale: 1,
+  digitalOffsetX: 0,
+  digitalOffsetY: 0,
+  cameraDeviceId: "",
 };
 
 const DIRECTIONS_BY_ORIENTATION = {
@@ -28,7 +58,7 @@ const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.05;
-const CAMERA_START_TIMEOUT_MS = 12000;
+const CAMERA_START_TIMEOUT_MS = 25000;
 
 const state = {
   stream: null,
@@ -66,6 +96,9 @@ const state = {
     projectedPeoplePerHour: 0,
     currentBucket: "--",
   },
+  cameraDevices: [],
+  cameraCapabilities: {},
+  cameraSettings: {},
   config: cloneConfig(DEFAULT_CONFIG),
 };
 
@@ -87,6 +120,8 @@ const els = {
   activeTrackCount: document.querySelector("#activeTrackCount"),
   realCount: document.querySelector("#realCount"),
   accuracyValue: document.querySelector("#accuracyValue"),
+  requestedResolution: document.querySelector("#requestedResolution"),
+  realResolution: document.querySelector("#realResolution"),
   todayLabel: document.querySelector("#todayLabel"),
   historyTotal: document.querySelector("#historyTotal"),
   historyDate: document.querySelector("#historyDate"),
@@ -110,6 +145,25 @@ const els = {
   swapLines: document.querySelector("#swapLines"),
   testCalibration: document.querySelector("#testCalibration"),
   calibrationStatus: document.querySelector("#calibrationStatus"),
+  cameraDevice: document.querySelector("#cameraDevice"),
+  cameraResolution: document.querySelector("#cameraResolution"),
+  cameraAspectRatio: document.querySelector("#cameraAspectRatio"),
+  cameraFps: document.querySelector("#cameraFps"),
+  cameraFitMode: document.querySelector("#cameraFitMode"),
+  cameraZoom: document.querySelector("#cameraZoom"),
+  cameraZoomValue: document.querySelector("#cameraZoomValue"),
+  cameraZoomStatus: document.querySelector("#cameraZoomStatus"),
+  digitalScale: document.querySelector("#digitalScale"),
+  digitalScaleValue: document.querySelector("#digitalScaleValue"),
+  digitalOffsetX: document.querySelector("#digitalOffsetX"),
+  digitalOffsetXValue: document.querySelector("#digitalOffsetXValue"),
+  digitalOffsetY: document.querySelector("#digitalOffsetY"),
+  digitalOffsetYValue: document.querySelector("#digitalOffsetYValue"),
+  cameraRequestedValue: document.querySelector("#cameraRequestedValue"),
+  cameraRealValue: document.querySelector("#cameraRealValue"),
+  recommendedCamera: document.querySelector("#recommendedCamera"),
+  wideView: document.querySelector("#wideView"),
+  resetFraming: document.querySelector("#resetFraming"),
   statusText: document.querySelector("#statusText"),
   statusPill: document.querySelector("#statusPill"),
   viewTitle: document.querySelector("#viewTitle"),
@@ -182,6 +236,8 @@ function wireUi() {
       startCamera();
     });
   }
+
+  wireCameraControls();
 
   els.saveCalibration.addEventListener("click", () => {
     ensureCalibrationDraft();
@@ -262,15 +318,96 @@ function wireUi() {
   addCalibrationPointerEvents();
 }
 
+function wireCameraControls() {
+  if (els.cameraDevice) {
+    els.cameraDevice.addEventListener("change", () => {
+      setCameraFields({ cameraDeviceId: els.cameraDevice.value }, { restart: true });
+    });
+  }
+
+  if (els.cameraResolution) {
+    els.cameraResolution.addEventListener("change", () => {
+      setCameraFields({ cameraResolution: els.cameraResolution.value }, { restart: true });
+    });
+  }
+
+  if (els.cameraAspectRatio) {
+    els.cameraAspectRatio.addEventListener("change", () => {
+      setCameraFields({ cameraAspectRatio: els.cameraAspectRatio.value }, { restart: true });
+    });
+  }
+
+  if (els.cameraFps) {
+    els.cameraFps.addEventListener("change", () => {
+      setCameraFields({ cameraFps: els.cameraFps.value }, { restart: true });
+    });
+  }
+
+  if (els.cameraFitMode) {
+    els.cameraFitMode.addEventListener("change", () => {
+      setCameraFields({ cameraFitMode: els.cameraFitMode.value });
+    });
+  }
+
+  if (els.digitalScale) {
+    els.digitalScale.addEventListener("input", () => {
+      setCameraFields({ digitalScale: Number(els.digitalScale.value) });
+    });
+  }
+
+  if (els.digitalOffsetX) {
+    els.digitalOffsetX.addEventListener("input", () => {
+      setCameraFields({ digitalOffsetX: Number(els.digitalOffsetX.value) });
+    });
+  }
+
+  if (els.digitalOffsetY) {
+    els.digitalOffsetY.addEventListener("input", () => {
+      setCameraFields({ digitalOffsetY: Number(els.digitalOffsetY.value) });
+    });
+  }
+
+  if (els.cameraZoom) {
+    els.cameraZoom.addEventListener("input", () => {
+      applyRealZoom(Number(els.cameraZoom.value));
+    });
+  }
+
+  if (els.recommendedCamera) {
+    els.recommendedCamera.addEventListener("click", () => {
+      applyRecommendedCamera();
+    });
+  }
+
+  if (els.wideView) {
+    els.wideView.addEventListener("click", () => {
+      applyWideView();
+    });
+  }
+
+  if (els.resetFraming) {
+    els.resetFraming.addEventListener("click", () => {
+      resetCameraFraming();
+    });
+  }
+
+  if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function") {
+    navigator.mediaDevices.addEventListener("devicechange", refreshVideoDevices);
+  }
+
+  refreshVideoDevices();
+}
+
 async function startCamera() {
   if (state.running) return;
   resetCameraEmpty();
   let cameraOpened = false;
   try {
     setStatus("Camara");
+    applyCameraView(activeCameraConfig());
     state.stream = await requestCameraStream();
     cameraOpened = true;
-    attachCameraStream(state.stream);
+    await attachCameraStream(state.stream);
     state.running = true;
     startSession();
     els.videoEmpty.hidden = true;
@@ -338,35 +475,48 @@ async function requestCameraStream() {
 }
 
 async function cameraConstraintAttempts() {
+  const config = activeCameraConfig();
   const desktop = !isMobileDevice();
-  const compact = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 } };
-  const hd = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } };
-  const attempts = desktop
-    ? [
+  const preferred = buildVideoConstraints(config);
+  const compact = buildVideoConstraints({ ...config, cameraResolution: "640x480" });
+  const hd = buildVideoConstraints({ ...config, cameraResolution: "1280x720" });
+  const attempts = [];
+  const devices = await refreshVideoDevices();
+
+  if (config.cameraDeviceId) {
+    attempts.push({ audio: false, video: buildVideoConstraints(config, { deviceId: config.cameraDeviceId }) });
+  }
+
+  if (desktop) {
+    attempts.push(
+      { audio: false, video: preferred },
       { audio: false, video: hd },
       { audio: false, video: compact },
       { audio: false, video: true },
       { audio: false, video: { facingMode: { ideal: "environment" }, ...compact } },
-    ]
-    : [
+    );
+  } else {
+    attempts.push(
+      { audio: false, video: { facingMode: { ideal: "environment" }, ...preferred } },
       { audio: false, video: { facingMode: { ideal: "environment" }, ...hd } },
       { audio: false, video: { facingMode: { ideal: "environment" }, ...compact } },
+      { audio: false, video: preferred },
       { audio: false, video: { facingMode: "user", ...compact } },
       { audio: false, video: true },
-    ];
+    );
+  }
 
-  const devices = await listVideoInputDevices();
-  devices.forEach((device) => {
+  rankWideDevices(devices).forEach((device) => {
     if (!device.deviceId) return;
     attempts.push({
       audio: false,
       video: {
         deviceId: { exact: device.deviceId },
-        ...compact,
+        ...preferred,
       },
     });
   });
-  return attempts;
+  return uniqueConstraintAttempts(attempts);
 }
 
 async function listVideoInputDevices() {
@@ -377,6 +527,294 @@ async function listVideoInputDevices() {
   } catch (_error) {
     return [];
   }
+}
+
+async function refreshVideoDevices() {
+  state.cameraDevices = await listVideoInputDevices();
+  renderCameraControls();
+  return state.cameraDevices;
+}
+
+function buildVideoConstraints(config, options = {}) {
+  const video = {};
+  const resolution = parseResolution(options.cameraResolution || config.cameraResolution);
+  const fps = parseFps(options.cameraFps || config.cameraFps);
+  const aspectRatio = parseAspectRatio(options.cameraAspectRatio || config.cameraAspectRatio);
+
+  if (resolution) {
+    video.width = { ideal: resolution.width };
+    video.height = { ideal: resolution.height };
+  } else {
+    video.width = { ideal: 1280 };
+    video.height = { ideal: 720 };
+  }
+
+  if (fps) {
+    video.frameRate = { ideal: fps };
+  } else {
+    video.frameRate = { ideal: 24, max: 30 };
+  }
+
+  if (aspectRatio) {
+    video.aspectRatio = { ideal: aspectRatio };
+  }
+
+  if (options.deviceId) {
+    video.deviceId = { exact: options.deviceId };
+  }
+
+  return video;
+}
+
+function parseResolution(value) {
+  const match = /^(\d{3,5})x(\d{3,5})$/i.exec(String(value || ""));
+  if (!match) return null;
+  return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+function parseFps(value) {
+  const fps = Number(value);
+  return Number.isFinite(fps) && fps > 0 ? fps : null;
+}
+
+function parseAspectRatio(value) {
+  if (value === "16:9") return 16 / 9;
+  if (value === "4:3") return 4 / 3;
+  return null;
+}
+
+function rankWideDevices(devices) {
+  return [...devices].sort((left, right) => deviceWideScore(right) - deviceWideScore(left));
+}
+
+function deviceWideScore(device) {
+  const label = String(device.label || "").toLowerCase();
+  let score = 0;
+  if (/ultra|wide|0\.5|0,5|gran angular|angle/i.test(label)) score += 100;
+  if (/back|rear|environment|trasera|posterior/i.test(label)) score += 35;
+  if (/front|user|frontal|facetime/i.test(label)) score -= 20;
+  return score;
+}
+
+function uniqueConstraintAttempts(attempts) {
+  const seen = new Set();
+  return attempts.filter((attempt) => {
+    const key = JSON.stringify(attempt);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function waitForVideoReady(video, timeoutMs = 3500) {
+  if (video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      video.removeEventListener("loadedmetadata", done);
+      video.removeEventListener("playing", done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    video.addEventListener("loadedmetadata", done, { once: true });
+    video.addEventListener("playing", done, { once: true });
+  });
+}
+
+async function refreshCameraTrackInfo() {
+  const track = currentVideoTrack();
+  if (!track) {
+    state.cameraCapabilities = {};
+    state.cameraSettings = {};
+    return;
+  }
+  state.cameraCapabilities = typeof track.getCapabilities === "function" ? track.getCapabilities() : {};
+  state.cameraSettings = typeof track.getSettings === "function" ? track.getSettings() : {};
+  if (state.cameraSettings.deviceId && !state.config.cameraDeviceId) {
+    setCameraFields({ cameraDeviceId: state.cameraSettings.deviceId }, { save: true, render: false, restart: false });
+  }
+  await refreshVideoDevices();
+}
+
+function currentVideoTrack() {
+  return state.stream && typeof state.stream.getVideoTracks === "function"
+    ? state.stream.getVideoTracks()[0] || null
+    : null;
+}
+
+function zoomCapability() {
+  const zoom = state.cameraCapabilities && state.cameraCapabilities.zoom;
+  if (!zoom || !Number.isFinite(zoom.min) || !Number.isFinite(zoom.max)) return null;
+  return {
+    min: Number(zoom.min),
+    max: Number(zoom.max),
+    step: Number.isFinite(zoom.step) && zoom.step > 0 ? Number(zoom.step) : 0.1,
+  };
+}
+
+async function applyConfiguredRealZoom() {
+  const caps = zoomCapability();
+  if (!caps) {
+    setCameraFields({ cameraZoom: null }, { save: false, render: false, restart: false });
+    return false;
+  }
+  const requested = Number.isFinite(Number(state.config.cameraZoom)) ? Number(state.config.cameraZoom) : caps.min;
+  return applyRealZoom(requested, { save: false });
+}
+
+async function applyRealZoom(value, options = {}) {
+  const track = currentVideoTrack();
+  const caps = zoomCapability();
+  if (!track || !caps || typeof track.applyConstraints !== "function") {
+    renderCameraControls();
+    return false;
+  }
+
+  const zoom = clampNumber(Number(value), caps.min, caps.max, caps.min);
+  try {
+    await track.applyConstraints({ advanced: [{ zoom }] });
+    state.cameraSettings = typeof track.getSettings === "function" ? track.getSettings() : state.cameraSettings;
+    setCameraFields({ cameraZoom: zoom }, { save: options.save !== false, render: false, restart: false });
+    renderCameraControls();
+    return true;
+  } catch (error) {
+    console.warn("Zoom control failed", error);
+    setStatus("Zoom no disponible");
+    renderCameraControls();
+    return false;
+  }
+}
+
+function activeCameraConfig() {
+  return state.activeView === "calibrate" ? draftConfig() : state.config;
+}
+
+function setCameraFields(fields, options = {}) {
+  const nextConfig = cloneConfig(state.config);
+  const nextDraft = cloneConfig(draftConfig());
+  Object.entries(fields).forEach(([key, value]) => {
+    if (!CAMERA_CONFIG_FIELDS.includes(key)) return;
+    const normalizedValue = normalizeCameraField(key, value);
+    nextConfig[key] = normalizedValue;
+    nextDraft[key] = normalizedValue;
+  });
+  state.config = normalizeConfig(nextConfig, { align: false });
+  state.calibrationDraft = normalizeConfig(nextDraft, { align: false });
+  if (options.save !== false) saveState();
+  if (options.applyView !== false) {
+    applyCameraView(activeCameraConfig());
+    drawCalibration();
+  }
+  if (options.render !== false) renderCameraControls();
+  if (options.restart && state.stream) {
+    restartCameraStream();
+  }
+}
+
+function normalizeCameraField(key, value) {
+  if (key === "cameraResolution") return normalizeCameraResolution(value);
+  if (key === "cameraAspectRatio") return CAMERA_ASPECT_RATIOS.includes(value) ? value : DEFAULT_CONFIG.cameraAspectRatio;
+  if (key === "cameraFps") return CAMERA_FPS_OPTIONS.includes(String(value)) ? String(value) : DEFAULT_CONFIG.cameraFps;
+  if (key === "cameraFitMode") return value === "cover" ? "cover" : "fit";
+  if (key === "cameraZoom") return Number.isFinite(Number(value)) ? Number(value) : null;
+  if (key === "digitalScale") return clampNumber(Number(value), 1, 2.5, DEFAULT_CONFIG.digitalScale);
+  if (key === "digitalOffsetX") return clampNumber(Number(value), -50, 50, DEFAULT_CONFIG.digitalOffsetX);
+  if (key === "digitalOffsetY") return clampNumber(Number(value), -50, 50, DEFAULT_CONFIG.digitalOffsetY);
+  if (key === "cameraDeviceId") return String(value || "");
+  return value;
+}
+
+function normalizeCameraResolution(value) {
+  const text = String(value || "").toLowerCase().replace(/\s+/g, "");
+  if (text === "auto") return "auto";
+  return parseResolution(text) ? text : DEFAULT_CONFIG.cameraResolution;
+}
+
+function applyCameraView(config = activeCameraConfig()) {
+  const fit = config.cameraFitMode === "cover" ? "cover" : "contain";
+  const scale = clampNumber(Number(config.digitalScale), 1, 2.5, 1);
+  const offsetX = clampNumber(Number(config.digitalOffsetX), -50, 50, 0);
+  const offsetY = clampNumber(Number(config.digitalOffsetY), -50, 50, 0);
+  document.querySelectorAll(".video-wrap").forEach((wrap) => {
+    wrap.style.setProperty("--camera-fit", fit);
+    wrap.style.setProperty("--camera-scale", String(scale));
+    wrap.style.setProperty("--camera-offset-x", `${offsetX}%`);
+    wrap.style.setProperty("--camera-offset-y", `${offsetY}%`);
+  });
+}
+
+async function restartCameraStream() {
+  if (!state.stream) return;
+  setStatus("Reiniciando");
+  state.stream.getTracks().forEach((track) => track.stop());
+  state.stream = null;
+  state.running = false;
+  state.tracks.clear();
+  els.videoEmpty.hidden = false;
+  els.calibrationEmpty.hidden = false;
+  els.toggleCamera.innerHTML = '<span class="icon">▶</span><span>Iniciar</span>';
+  await startCamera();
+}
+
+async function applyRecommendedCamera() {
+  const device = bestWideDevice();
+  const fields = {
+    cameraResolution: "1280x720",
+    cameraAspectRatio: "auto",
+    cameraFps: "15",
+    cameraFitMode: "fit",
+    digitalScale: 1,
+    digitalOffsetX: 0,
+    digitalOffsetY: 0,
+  };
+  if (device) fields.cameraDeviceId = device.deviceId;
+  const caps = zoomCapability();
+  fields.cameraZoom = caps ? caps.min : null;
+  setCameraFields(fields, { restart: Boolean(device || state.stream) });
+  if (caps) await applyRealZoom(caps.min);
+  setStatus("Camara recomendada");
+}
+
+async function applyWideView() {
+  const device = bestWideDevice();
+  const fields = {
+    cameraResolution: "1280x720",
+    cameraAspectRatio: "auto",
+    cameraFps: "15",
+    cameraFitMode: "fit",
+    digitalScale: 1,
+    digitalOffsetX: 0,
+    digitalOffsetY: 0,
+  };
+  if (device) fields.cameraDeviceId = device.deviceId;
+  const caps = zoomCapability();
+  fields.cameraZoom = caps ? caps.min : null;
+  setCameraFields(fields, { restart: Boolean(state.stream) });
+  if (caps) await applyRealZoom(caps.min);
+  setStatus("Vista amplia");
+}
+
+async function resetCameraFraming() {
+  const caps = zoomCapability();
+  setCameraFields({
+    cameraResolution: DEFAULT_CONFIG.cameraResolution,
+    cameraAspectRatio: DEFAULT_CONFIG.cameraAspectRatio,
+    cameraFps: DEFAULT_CONFIG.cameraFps,
+    cameraFitMode: DEFAULT_CONFIG.cameraFitMode,
+    cameraZoom: caps ? caps.min : null,
+    digitalScale: DEFAULT_CONFIG.digitalScale,
+    digitalOffsetX: DEFAULT_CONFIG.digitalOffsetX,
+    digitalOffsetY: DEFAULT_CONFIG.digitalOffsetY,
+  }, { restart: Boolean(state.stream) });
+  if (caps) await applyRealZoom(caps.min);
+  setStatus("Encuadre restaurado");
+}
+
+function bestWideDevice() {
+  return rankWideDevices(state.cameraDevices).find((device) => device.deviceId) || null;
 }
 
 function getUserMediaWithTimeout(constraints) {
@@ -406,14 +844,20 @@ function getUserMediaWithTimeout(constraints) {
   });
 }
 
-function attachCameraStream(stream) {
-  [els.camera, els.calibrationMirror, els.helpMirror].forEach((video) => {
+async function attachCameraStream(stream) {
+  const playPromises = [els.camera, els.calibrationMirror, els.helpMirror].map((video) => {
     video.srcObject = stream;
     const playPromise = video.play();
     if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(() => {});
+      return playPromise.catch(() => {});
     }
+    return Promise.resolve();
   });
+  await Promise.allSettled(playPromises);
+  await waitForVideoReady(els.camera);
+  await refreshCameraTrackInfo();
+  await applyConfiguredRealZoom();
+  renderCameraControls();
 }
 
 function cameraStartError(reason, message) {
@@ -484,7 +928,7 @@ function cameraFailureInfo(error) {
       message: "La compu no pudo iniciar la camara seleccionada.",
       status: "Reintentar",
       action: "retry",
-      help: "Cierra otras apps que usen camara y presiona Reintentar camara.",
+      help: "Cierra otras apps que usen camara. Si sigue igual, entra a Calibrar y prueba Auto o 640 x 480.",
     };
   }
   if (isPermissionError(error)) {
@@ -1222,6 +1666,11 @@ function normalizeConfig(config, options = {}) {
   if (config.sessionId) normalized.sessionId = config.sessionId;
   if (config.deviceId) normalized.deviceId = config.deviceId;
   if (config.zoneId) normalized.zoneId = config.zoneId;
+  CAMERA_CONFIG_FIELDS.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(config, key)) {
+      normalized[key] = normalizeCameraField(key, config[key]);
+    }
+  });
 
   updateCalibrationMetadata(normalized);
   if (shouldAlign) {
@@ -1332,6 +1781,136 @@ function renderCalibrationControls() {
     els.testCalibration.classList.toggle("active", state.calibrationProbe.active);
   }
   setCalibrationStatus(state.calibrationStatus || calibrationDistanceLabel(config), state.calibrationStatusKind || "ok");
+}
+
+function renderCameraControls() {
+  const config = activeCameraConfig();
+  setSelectOptions(els.cameraResolution, cameraResolutionOptions(), config.cameraResolution);
+  setSelectOptions(els.cameraAspectRatio, [
+    { value: "auto", label: "Auto" },
+    { value: "16:9", label: "16:9" },
+    { value: "4:3", label: "4:3" },
+  ], config.cameraAspectRatio);
+  setSelectOptions(els.cameraFps, [
+    { value: "auto", label: "Auto" },
+    { value: "15", label: "15 FPS" },
+    { value: "20", label: "20 FPS" },
+    { value: "25", label: "25 FPS" },
+    { value: "30", label: "30 FPS" },
+  ], config.cameraFps);
+  setSelectOptions(els.cameraFitMode, [
+    { value: "fit", label: "Mostrar todo / FIT" },
+    { value: "cover", label: "Llenar / COVER" },
+  ], config.cameraFitMode);
+  setSelectOptions(els.cameraDevice, cameraDeviceOptions(), config.cameraDeviceId);
+
+  setRangeValue(els.digitalScale, els.digitalScaleValue, config.digitalScale, (value) => `${Math.round(value * 100)}%`);
+  setRangeValue(els.digitalOffsetX, els.digitalOffsetXValue, config.digitalOffsetX, (value) => `${Math.round(value)}`);
+  setRangeValue(els.digitalOffsetY, els.digitalOffsetYValue, config.digitalOffsetY, (value) => `${Math.round(value)}`);
+  renderZoomControl(config);
+
+  const requested = requestedCameraLabel(config);
+  const real = realCameraLabel();
+  if (els.requestedResolution) els.requestedResolution.textContent = requested;
+  if (els.realResolution) els.realResolution.textContent = real;
+  if (els.cameraRequestedValue) els.cameraRequestedValue.textContent = requested;
+  if (els.cameraRealValue) els.cameraRealValue.textContent = `Real: ${real}`;
+}
+
+function setSelectOptions(select, options, value) {
+  if (!select) return;
+  const hash = JSON.stringify(options);
+  if (select.dataset.optionsHash !== hash) {
+    select.innerHTML = options.map((option) => (
+      `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`
+    )).join("");
+    select.dataset.optionsHash = hash;
+  }
+  select.value = value;
+  if (!select.value && options.length) {
+    select.value = options[0].value;
+  }
+}
+
+function cameraResolutionOptions() {
+  const options = [...CAMERA_RESOLUTIONS];
+  const settings = state.cameraSettings || {};
+  const current = settings.width && settings.height ? `${settings.width}x${settings.height}` : "";
+  if (current && !options.some((option) => option.value === current)) {
+    options.push({ value: current, label: `${settings.width} x ${settings.height} actual` });
+  }
+  return options;
+}
+
+function cameraDeviceOptions() {
+  const options = [{ value: "", label: "Auto" }];
+  state.cameraDevices.forEach((device, index) => {
+    if (!device.deviceId) return;
+    const label = device.label || `Camara ${index + 1}`;
+    const suffix = deviceWideScore(device) >= 100 ? " (gran angular)" : "";
+    options.push({ value: device.deviceId, label: `${label}${suffix}` });
+  });
+  return options;
+}
+
+function setRangeValue(input, output, value, formatter) {
+  if (!input) return;
+  input.value = String(value);
+  if (output) output.textContent = formatter ? formatter(Number(value)) : String(value);
+}
+
+function renderZoomControl(config) {
+  if (!els.cameraZoom) return;
+  const caps = zoomCapability();
+  if (!caps) {
+    els.cameraZoom.disabled = true;
+    els.cameraZoom.min = "1";
+    els.cameraZoom.max = "1";
+    els.cameraZoom.step = "0.1";
+    els.cameraZoom.value = "1";
+    if (els.cameraZoomValue) els.cameraZoomValue.textContent = "No disponible";
+    if (els.cameraZoomStatus) {
+      els.cameraZoomStatus.textContent = state.stream
+        ? "Esta camara no permite controlar zoom directamente."
+        : "Abre la camara para leer capacidades reales.";
+    }
+    return;
+  }
+
+  const value = Number.isFinite(Number(config.cameraZoom))
+    ? clampNumber(Number(config.cameraZoom), caps.min, caps.max, caps.min)
+    : Number(state.cameraSettings.zoom || caps.min);
+  els.cameraZoom.disabled = false;
+  els.cameraZoom.min = String(caps.min);
+  els.cameraZoom.max = String(caps.max);
+  els.cameraZoom.step = String(caps.step);
+  els.cameraZoom.value = String(value);
+  if (els.cameraZoomValue) els.cameraZoomValue.textContent = `${round(value, 2)}x`;
+  if (els.cameraZoomStatus) {
+    els.cameraZoomStatus.textContent = `Zoom real disponible: ${caps.min}x a ${caps.max}x`;
+  }
+}
+
+function requestedCameraLabel(config) {
+  const resolution = config.cameraResolution === "auto" ? "Auto" : config.cameraResolution.replace("x", " x ");
+  const fps = config.cameraFps === "auto" ? "FPS auto" : `${config.cameraFps} FPS`;
+  const ratio = config.cameraAspectRatio === "auto" ? "Auto" : config.cameraAspectRatio;
+  return `${resolution} · ${ratio} · ${fps}`;
+}
+
+function realCameraLabel() {
+  const settings = state.cameraSettings || {};
+  if (!settings.width || !settings.height) return "--";
+  const fps = settings.frameRate ? ` · ${round(settings.frameRate, 1)} FPS` : "";
+  return `${settings.width} x ${settings.height}${fps}`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function updateCalibrationProbe(tracks) {
@@ -1537,6 +2116,7 @@ function setView(view) {
   document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   const titles = { count: "Conteo", calibrate: "Calibrador", history: "Historial", help: "Primeros pasos" };
   els.viewTitle.textContent = titles[view] || "Conteo";
+  applyCameraView(activeCameraConfig());
   renderAll();
 }
 
@@ -1547,6 +2127,7 @@ function setStatus(text) {
 function renderAll() {
   state.count = state.events.length;
   const summary = buildDailySummary(state.events, state.sessions);
+  applyCameraView(activeCameraConfig());
   els.countValue.textContent = state.count;
   els.todayLabel.textContent = formatDate(todayKey);
   els.historyTotal.textContent = state.count;
@@ -1556,6 +2137,7 @@ function renderAll() {
   renderDebugMetrics(summary);
   renderLiveSummary(summary);
   renderCalibrationControls();
+  renderCameraControls();
   drawCalibration();
 }
 
@@ -1690,15 +2272,37 @@ function toPx(point, canvas) {
 }
 
 function pointerToNorm(event, canvas) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = mediaContentRect(canvas, draftConfig());
   return {
     x: clamp((event.clientX - rect.left) / rect.width),
     y: clamp((event.clientY - rect.top) / rect.height),
   };
 }
 
+function mediaContentRect(element, config = activeCameraConfig()) {
+  const rect = element.getBoundingClientRect();
+  const naturalWidth = els.camera.videoWidth || element.width || rect.width || 1;
+  const naturalHeight = els.camera.videoHeight || element.height || rect.height || 1;
+  const fit = config.cameraFitMode === "cover" ? "cover" : "fit";
+  const ratio = naturalWidth / naturalHeight;
+  const boxRatio = rect.width / Math.max(1, rect.height);
+  const useHeight = fit === "cover" ? boxRatio > ratio : boxRatio < ratio;
+  let width = useHeight ? rect.width : rect.height * ratio;
+  let height = useHeight ? rect.width / ratio : rect.height;
+
+  const left = rect.left + (rect.width - width) / 2;
+  const top = rect.top + (rect.height - height) / 2;
+  return { left, top, width, height };
+}
+
 function clamp(value) {
   return Math.max(0, Math.min(1, value));
+}
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(minimum, Math.min(maximum, number));
 }
 
 function crossedLine(previous, current, line, config = state.config) {

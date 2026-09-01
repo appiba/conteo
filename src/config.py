@@ -50,6 +50,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "frame_width": 1280,
     "frame_height": 720,
     "target_fps": 15,
+    "camera_resolution": "1280x720",
+    "camera_aspect_ratio": "auto",
+    "camera_fps": "15",
+    "camera_fit_mode": "fit",
+    "camera_zoom": None,
+    "digital_scale": 1.0,
+    "digital_offset_x": 0.0,
+    "digital_offset_y": 0.0,
+    "camera_device_id": "",
     "yolo_model": "yolov8s.pt",
     "imgsz": 960,
     "tracker_config": "config/bytetrack-groups.yaml",
@@ -65,6 +74,10 @@ ENTRY_DIRECTIONS_BY_ORIENTATION = {
     "vertical": {"LEFT_TO_RIGHT", "RIGHT_TO_LEFT"},
     "horizontal": {"TOP_TO_BOTTOM", "BOTTOM_TO_TOP"},
 }
+CAMERA_RESOLUTIONS = {"auto", "640x480", "1280x720", "1920x1080"}
+CAMERA_ASPECT_RATIOS = {"auto", "16:9", "4:3"}
+CAMERA_FPS_OPTIONS = {"auto", "15", "20", "25", "30"}
+CAMERA_FIT_MODES = {"fit", "cover"}
 
 
 def load_config(path: Path | str = "config.json") -> dict[str, Any]:
@@ -107,6 +120,15 @@ def validate_config(config: dict[str, Any]) -> None:
     _require_int(config, "frame_width", minimum=160)
     _require_int(config, "frame_height", minimum=120)
     _require_int(config, "target_fps", minimum=1)
+    _require_choice_or_resolution(config, "camera_resolution", CAMERA_RESOLUTIONS)
+    _require_choice(config, "camera_aspect_ratio", CAMERA_ASPECT_RATIOS)
+    _require_choice(config, "camera_fps", CAMERA_FPS_OPTIONS)
+    _require_choice(config, "camera_fit_mode", CAMERA_FIT_MODES)
+    if config.get("camera_zoom") is not None:
+        _require_number(config, "camera_zoom", minimum=0.0)
+    _require_number(config, "digital_scale", minimum=1.0, maximum=2.5)
+    _require_number(config, "digital_offset_x", minimum=-50.0, maximum=50.0)
+    _require_number(config, "digital_offset_y", minimum=-50.0, maximum=50.0)
     _require_int(config, "imgsz", minimum=320)
     _require_int(config, "max_det", minimum=1)
     _require_int(config, "computer_server_port", minimum=1, maximum=65535)
@@ -146,6 +168,10 @@ def _normalize_legacy_fields(config: dict[str, Any]) -> None:
     elif camera_type == "ip_camera" and "source_type" not in config:
         config["source_type"] = "ip_camera"
     config["camera_type"] = config.get("source_type", "webcam")
+    if config.get("camera_fps") is not None:
+        config["camera_fps"] = str(config["camera_fps"]).lower()
+    if isinstance(config.get("camera_resolution"), str):
+        config["camera_resolution"] = config["camera_resolution"].lower().replace(" ", "")
 
 
 def _require_number(config: dict[str, Any], key: str, minimum: float, maximum: float | None = None) -> None:
@@ -166,6 +192,25 @@ def _require_int(config: dict[str, Any], key: str, minimum: int, maximum: int | 
         raise ConfigError(f"{key} debe ser mayor o igual a {minimum}.")
     if maximum is not None and value > maximum:
         raise ConfigError(f"{key} debe ser menor o igual a {maximum}.")
+
+
+def _require_choice(config: dict[str, Any], key: str, choices: set[str]) -> None:
+    value = config.get(key)
+    if value not in choices:
+        raise ConfigError(f"{key} debe ser uno de {sorted(choices)}.")
+
+
+def _require_choice_or_resolution(config: dict[str, Any], key: str, choices: set[str]) -> None:
+    value = config.get(key)
+    if value in choices:
+        return
+    if isinstance(value, str):
+        parts = value.lower().split("x", 1)
+        if len(parts) == 2 and all(part.isdigit() for part in parts):
+            width, height = [int(part) for part in parts]
+            if width >= 160 and height >= 120:
+                return
+    raise ConfigError(f"{key} debe ser uno de {sorted(choices)} o una resolucion como 1280x720.")
 
 
 def _is_point(value: Any) -> bool:

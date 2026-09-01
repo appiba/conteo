@@ -50,9 +50,10 @@ class OpenCvVideoSource:
             if not cap.isOpened():
                 cap.release()
                 continue
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.config.get("frame_width", 1280)))
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.config.get("frame_height", 720)))
-            cap.set(cv2.CAP_PROP_FPS, int(self.config.get("target_fps", 20)))
+            width, height = _requested_frame_size(self.config)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, _requested_fps(self.config))
             return cap
         return cv2.VideoCapture(self.source)
 
@@ -145,3 +146,21 @@ def create_video_source(config: dict):
     if source_type == "phone_browser":
         return PhoneBrowserVideoSource(config)
     raise CameraOpenError(f"source_type no soportado: {source_type}")
+
+
+def _requested_frame_size(config: dict) -> tuple[int, int]:
+    resolution = str(config.get("camera_resolution", "")).lower().replace(" ", "")
+    if "x" in resolution and resolution != "auto":
+        width_text, height_text = resolution.split("x", 1)
+        if width_text.isdigit() and height_text.isdigit():
+            width = max(160, int(width_text))
+            height = max(120, int(height_text))
+            return width, height
+    return int(config.get("frame_width", 1280)), int(config.get("frame_height", 720))
+
+
+def _requested_fps(config: dict) -> int:
+    camera_fps = str(config.get("camera_fps", "")).lower()
+    if camera_fps.isdigit():
+        return max(1, int(camera_fps))
+    return int(config.get("target_fps", 15))
