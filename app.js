@@ -11,11 +11,16 @@ const ENTRY_SEQUENCES = {
   RIGHT_TO_LEFT: ["B", "A"],
 };
 
+const DETECTION_THRESHOLD = 0.30;
+const TRACK_MATCH_DISTANCE = 180;
+const TRACK_TTL_MS = 2600;
+
 const state = {
   stream: null,
   model: null,
   running: false,
   count: 0,
+  realCount: 0,
   history: [],
   tracks: new Map(),
   nextTrackId: 1,
@@ -23,6 +28,12 @@ const state = {
   activeTool: "lineA",
   dragging: null,
   lastFrameSentAt: 0,
+  lastDebugLogAt: 0,
+  debugStats: {
+    detectedPersons: 0,
+    activeTracks: 0,
+    entriesConfirmed: 0,
+  },
   config: cloneConfig(DEFAULT_CONFIG),
 };
 
@@ -36,6 +47,10 @@ const els = {
   videoEmpty: document.querySelector("#videoEmpty"),
   calibrationEmpty: document.querySelector("#calibrationEmpty"),
   countValue: document.querySelector("#countValue"),
+  detectedCount: document.querySelector("#detectedCount"),
+  activeTrackCount: document.querySelector("#activeTrackCount"),
+  realCount: document.querySelector("#realCount"),
+  accuracyValue: document.querySelector("#accuracyValue"),
   todayLabel: document.querySelector("#todayLabel"),
   historyTotal: document.querySelector("#historyTotal"),
   historyDate: document.querySelector("#historyDate"),
@@ -67,10 +82,17 @@ function wireUi() {
 
   els.resetCount.addEventListener("click", () => {
     state.count = 0;
+    state.debugStats.entriesConfirmed = 0;
     state.tracks.clear();
     pushHistory("Reinicio", state.count);
     saveState();
     renderAll();
+  });
+
+  els.realCount.addEventListener("input", () => {
+    state.realCount = Math.max(0, Number(els.realCount.value || 0));
+    saveState();
+    renderDebugMetrics();
   });
 
   els.saveCalibration.addEventListener("click", () => {
@@ -144,7 +166,11 @@ async function loadModel() {
   if (!window.cocoSsd) {
     throw new Error("No cargo el modelo de deteccion. Revisa internet y vuelve a abrir el link.");
   }
-  state.model = await window.cocoSsd.load({ base: "lite_mobilenet_v2" });
+  try {
+    state.model = await window.cocoSsd.load({ base: "mobilenet_v2" });
+  } catch (_error) {
+    state.model = await window.cocoSsd.load({ base: "lite_mobilenet_v2" });
+  }
 }
 
 async function loop() {
@@ -152,7 +178,7 @@ async function loop() {
   if (els.camera.videoWidth > 0) {
     const predictions = await state.model.detect(els.camera);
     const people = predictions
-      .filter((item) => item.class === "person" && item.score >= 0.45)
+      .filter((item) => item.class === "person" && item.score >= DETECTION_THRESHOLD)
       .map((item) => ({
         box: {
           x: item.bbox[0],
@@ -163,7 +189,11 @@ async function loop() {
         score: item.score,
       }));
     const tracks = updateTracks(people);
+    state.debugStats.detectedPersons = people.length;
+    state.debugStats.activeTracks = tracks.length;
     updateCount(tracks);
+    renderDebugMetrics();
+    logDebugCounts(people.length, tracks.length);
     drawOverlay(els.overlay, tracks);
     drawOverlay(els.calibrationOverlay, tracks);
     drawOverlay(els.helpOverlay, tracks);
@@ -174,35 +204,48 @@ async function loop() {
 
 function updateTracks(detections) {
   const now = performance.now();
-  const unmatched = detections.map((_, index) => index);
   const active = [];
+  const candidates = [];
+  const matchedTrackIds = new Set();
+  const matchedDetectionIds = new Set();
 
   for (const [id, track] of state.tracks) {
-    let bestDetection = -1;
-    let bestDistance = 999999;
-    unmatched.forEach((index) => {
-      const center = bottomCenter(detections[index].box);
+    detections.forEach((detection, index) => {
+      const center = bottomCenter(detection.box);
       const distance = Math.hypot(center.x - track.point.x, center.y - track.point.y);
-      if (distance < bestDistance && distance < 120) {
-        bestDistance = distance;
-        bestDetection = index;
+      const overlap = boxIou(track.box, detection.box);
+      const adaptiveDistance = Math.max(TRACK_MATCH_DISTANCE, boxDiagonal(track.box) * 0.45);
+      if (distance <= adaptiveDistance || overlap >= 0.08) {
+        candidates.push({ id, index, score: overlap * 1000 - distance });
       }
     });
-    if (bestDetection >= 0) {
-      const detection = detections[bestDetection];
-      const point = bottomCenter(detection.box);
-      track.previousPoint = track.point;
-      track.point = point;
-      track.box = detection.box;
-      track.score = detection.score;
-      track.lastSeen = now;
-      active.push({ id, ...track });
-      unmatched.splice(unmatched.indexOf(bestDetection), 1);
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  candidates.forEach((candidate) => {
+    if (matchedTrackIds.has(candidate.id) || matchedDetectionIds.has(candidate.index)) return;
+    const track = state.tracks.get(candidate.id);
+    const detection = detections[candidate.index];
+    if (!track || !detection) return;
+    const point = bottomCenter(detection.box);
+    track.previousPoint = track.point;
+    track.point = point;
+    track.box = detection.box;
+    track.score = detection.score;
+    track.lastSeen = now;
+    matchedTrackIds.add(candidate.id);
+    matchedDetectionIds.add(candidate.index);
+    active.push({ id: candidate.id, ...track });
+  });
+
+  for (const [id, track] of state.tracks) {
+    if (!matchedTrackIds.has(id) && now - track.lastSeen > TRACK_TTL_MS) {
+      state.tracks.delete(id);
     }
   }
 
-  unmatched.forEach((index) => {
-    const detection = detections[index];
+  detections.forEach((detection, index) => {
+    if (matchedDetectionIds.has(index)) return;
     const point = bottomCenter(detection.box);
     const id = state.nextTrackId++;
     const track = {
@@ -218,12 +261,6 @@ function updateTracks(detections) {
     active.push({ id, ...track });
   });
 
-  for (const [id, track] of state.tracks) {
-    if (now - track.lastSeen > 1500) {
-      state.tracks.delete(id);
-    }
-  }
-
   return active.filter((track) => pointInPolygon(track.point, state.config.roi));
 }
 
@@ -233,8 +270,11 @@ function updateCount(tracks) {
     if (!stored || stored.counted || !track.previousPoint) return;
 
     orderedCrossings(track.previousPoint, track.point).forEach((crossing) => {
+      console.debug(`Track ${track.id} crossed ${crossing}`);
       if (applyCrossing(stored, crossing)) {
         state.count += 1;
+        state.debugStats.entriesConfirmed = state.count;
+        console.debug(`Track ${track.id} ENTRY CONFIRMED`);
         pushHistory("Entrada", state.count);
         saveState();
         renderAll();
@@ -242,6 +282,14 @@ function updateCount(tracks) {
       }
     });
   });
+}
+
+function logDebugCounts(detectedPersons, activeTracks) {
+  const now = performance.now();
+  if (now - state.lastDebugLogAt < 1000) return;
+  state.lastDebugLogAt = now;
+  console.debug(`DETECTED persons: ${detectedPersons}`);
+  console.debug(`ACTIVE tracks: ${activeTracks}`);
 }
 
 function orderedCrossings(previous, current) {
@@ -458,8 +506,22 @@ function renderAll() {
   els.todayLabel.textContent = formatDate(todayKey);
   els.historyTotal.textContent = state.count;
   els.historyDate.textContent = formatDate(todayKey);
+  els.realCount.value = state.realCount;
   renderHistory();
+  renderDebugMetrics();
   drawCalibration();
+}
+
+function renderDebugMetrics() {
+  els.detectedCount.textContent = state.debugStats.detectedPersons;
+  els.activeTrackCount.textContent = state.debugStats.activeTracks;
+  state.debugStats.entriesConfirmed = state.count;
+  if (state.realCount > 0) {
+    const accuracy = Math.min(999.9, (state.count / state.realCount) * 100);
+    els.accuracyValue.textContent = `${accuracy.toFixed(1)}%`;
+  } else {
+    els.accuracyValue.textContent = "--";
+  }
 }
 
 function renderHistory() {
@@ -473,6 +535,7 @@ function loadState() {
   const saved = JSON.parse(localStorage.getItem("afluencia-counter") || "{}");
   if (saved.date === todayKey) {
     state.count = Number(saved.count || 0);
+    state.realCount = Number(saved.realCount || 0);
     state.history = Array.isArray(saved.history) ? saved.history : [];
   }
   if (saved.config) {
@@ -484,6 +547,7 @@ function saveState() {
   localStorage.setItem("afluencia-counter", JSON.stringify({
     date: todayKey,
     count: state.count,
+    realCount: state.realCount,
     history: state.history,
     config: state.config,
   }));
@@ -506,6 +570,24 @@ function resizeCanvas(canvas, width, height) {
 
 function bottomCenter(box) {
   return { x: box.x + box.w / 2, y: box.y + box.h };
+}
+
+function boxIou(a, b) {
+  const interLeft = Math.max(a.x, b.x);
+  const interTop = Math.max(a.y, b.y);
+  const interRight = Math.min(a.x + a.w, b.x + b.w);
+  const interBottom = Math.min(a.y + a.h, b.y + b.h);
+  const interWidth = Math.max(0, interRight - interLeft);
+  const interHeight = Math.max(0, interBottom - interTop);
+  const intersection = interWidth * interHeight;
+  if (intersection <= 0) return 0;
+  const areaA = a.w * a.h;
+  const areaB = b.w * b.h;
+  return intersection / Math.max(1, areaA + areaB - intersection);
+}
+
+function boxDiagonal(box) {
+  return Math.hypot(box.w, box.h);
 }
 
 function toPx(point, canvas) {

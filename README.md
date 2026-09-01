@@ -69,6 +69,12 @@ En la ventana principal:
 
 La logica usa el movimiento horizontal del punto inferior-central de la persona. Con `entry_direction` en `LEFT_TO_RIGHT`, cuenta una entrada solo cuando el mismo `track_id` cruza `LINE_A` y luego `LINE_B`. Si cruza `LINE_B` y luego `LINE_A`, se considera salida y no suma.
 
+## Precision con grupos
+
+La configuracion esta ajustada para priorizar precision de conteo sobre FPS: `confidence` 0.30, `iou` 0.70, inferencia `imgsz` 960, modelo `yolov8s.pt` y ByteTrack con buffer de 60 frames para tolerar oclusiones breves. En modo debug se muestran `PERSONAS DETECTADAS`, `TRACKS ACTIVOS` y `ENTRADAS CONFIRMADAS`.
+
+En el enlace web tambien aparece un campo `Conteo real` para pruebas manuales. Escribe cuantas personas entraron realmente y la app calcula la precision contra el conteo del sistema.
+
 ## Controles
 
 - `Espacio`: iniciar/detener conteo.

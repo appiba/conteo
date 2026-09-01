@@ -1,0 +1,69 @@
+{
+  "source_type": "phone_browser",
+  "camera_type": "phone_browser",
+  "camera_index": 0,
+  "camera_url": "",
+  "video_file": "",
+  "phone_server_host": "0.0.0.0",
+  "phone_server_port": 8766,
+  "computer_server_host": "127.0.0.1",
+  "computer_server_port": 8765,
+  "phone_https_enabled": true,
+  "confidence": 0.3,
+  "iou": 0.7,
+  "max_det": 80,
+  "debug": true,
+  "debug_log_every_frames": 15,
+  "auto_start": true,
+  "line_a": [
+    [
+      486,
+      86
+    ],
+    [
+      486,
+      662
+    ]
+  ],
+  "line_b": [
+    [
+      793,
+      86
+    ],
+    [
+      793,
+      662
+    ]
+  ],
+  "roi": [
+    [
+      102,
+      86
+    ],
+    [
+      1177,
+      86
+    ],
+    [
+      1177,
+      662
+    ],
+    [
+      102,
+      662
+    ]
+  ],
+  "track_ttl_frames": 70,
+  "entry_direction": "LEFT_TO_RIGHT",
+  "fallback_tracker_max_distance": 160.0,
+  "fallback_tracker_max_missing": 45,
+  "frame_width": 1280,
+  "frame_height": 720,
+  "target_fps": 15,
+  "yolo_model": "yolov8s.pt",
+  "imgsz": 960,
+  "tracker_config": "config/bytetrack-groups.yaml",
+  "google_sheets_enabled": false,
+  "apps_script_url": "",
+  "camera_name": "CAMARA_01"
+}
