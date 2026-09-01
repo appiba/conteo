@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .geometry import Line, Point, horizontal_crossed_line, line_mid_x
+from .geometry import (
+    Line,
+    Point,
+    line_axis_mid,
+    movement_crossed_line,
+    normalize_entry_direction,
+    normalize_orientation,
+)
 from .tracker import TrackedPerson
-
-
-ENTRY_SEQUENCES = {
-    "LEFT_TO_RIGHT": ("A", "B"),
-    "RIGHT_TO_LEFT": ("B", "A"),
-}
 
 
 @dataclass
@@ -37,10 +38,17 @@ class TrackMemory:
 
 
 class EntryCounter:
-    def __init__(self, initial_count: int = 0, ttl_frames: int = 45, entry_direction: str = "LEFT_TO_RIGHT") -> None:
+    def __init__(
+        self,
+        initial_count: int = 0,
+        ttl_frames: int = 45,
+        entry_direction: str = "LEFT_TO_RIGHT",
+        line_orientation: str = "vertical",
+    ) -> None:
         self.total = int(initial_count)
         self.ttl_frames = ttl_frames
-        self.entry_direction = _normalize_entry_direction(entry_direction)
+        self.line_orientation = normalize_orientation(line_orientation)
+        self.entry_direction = normalize_entry_direction(entry_direction, self.line_orientation)
         self._tracks: dict[int, TrackMemory] = {}
 
     def set_total(self, total: int) -> None:
@@ -57,12 +65,15 @@ class EntryCounter:
         line_b: Line,
         frame_index: int,
         entry_direction: str | None = None,
+        line_orientation: str | None = None,
     ) -> CounterUpdate:
         increment = 0
         events: list[CounterEvent] = []
         active_ids = set()
+        if line_orientation is not None:
+            self.line_orientation = normalize_orientation(line_orientation)
         if entry_direction is not None:
-            self.entry_direction = _normalize_entry_direction(entry_direction)
+            self.entry_direction = normalize_entry_direction(entry_direction, self.line_orientation)
 
         for person in people:
             active_ids.add(person.track_id)
@@ -87,16 +98,17 @@ class EntryCounter:
 
     def _crossings(self, previous: Point | None, current: Point, line_a: Line, line_b: Line) -> list[str]:
         crossed = []
-        if horizontal_crossed_line(previous, current, line_a):
-            crossed.append(("A", line_mid_x(line_a)))
-        if horizontal_crossed_line(previous, current, line_b):
-            crossed.append(("B", line_mid_x(line_b)))
+        if movement_crossed_line(previous, current, line_a, self.line_orientation):
+            crossed.append(("A", line_axis_mid(line_a, self.line_orientation)))
+        if movement_crossed_line(previous, current, line_b, self.line_orientation):
+            crossed.append(("B", line_axis_mid(line_b, self.line_orientation)))
         if len(crossed) <= 1:
-            return [name for name, _mid_x in crossed]
+            return [name for name, _axis_mid in crossed]
 
-        dx = current[0] - (previous[0] if previous else current[0])
-        crossed.sort(key=lambda item: item[1], reverse=dx < 0)
-        return [name for name, _mid_x in crossed]
+        axis = 1 if self.line_orientation == "horizontal" else 0
+        delta = current[axis] - (previous[axis] if previous else current[axis])
+        crossed.sort(key=lambda item: item[1], reverse=delta < 0)
+        return [name for name, _axis_mid in crossed]
 
     def _apply_crossing(
         self,
@@ -109,10 +121,7 @@ class EntryCounter:
         if memory.counted:
             return False
 
-        first_line, second_line = ENTRY_SEQUENCES[self.entry_direction]
         crossing_phase = f"CROSSED_{crossing}"
-        first_phase = f"CROSSED_{first_line}"
-        second_phase = f"CROSSED_{second_line}"
 
         if memory.phase in ("COUNTED", "EXITED"):
             return False
@@ -145,7 +154,7 @@ class EntryCounter:
             )
             return False
 
-        if memory.phase == first_phase and crossing == second_line:
+        if memory.phase == "CROSSED_A" and crossing == "B":
             memory.phase = "COUNTED"
             memory.counted = True
             events.append(
@@ -160,7 +169,7 @@ class EntryCounter:
             )
             return True
 
-        if memory.phase == second_phase and crossing == first_line:
+        if memory.phase == "CROSSED_B" and crossing == "A":
             memory.phase = "EXITED"
             events.append(
                 CounterEvent(
@@ -175,10 +184,3 @@ class EntryCounter:
             return False
 
         return False
-
-
-def _normalize_entry_direction(value: str) -> str:
-    direction = str(value or "LEFT_TO_RIGHT").upper()
-    if direction not in ENTRY_SEQUENCES:
-        return "LEFT_TO_RIGHT"
-    return direction

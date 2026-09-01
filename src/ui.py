@@ -28,6 +28,8 @@ class AppUi:
         self._draw_roi(cv2, view, calibration.roi)
         self._draw_line(cv2, view, calibration.line_a, (80, 220, 80), "LINE_A")
         self._draw_line(cv2, view, calibration.line_b, (255, 170, 60), "LINE_B")
+        if calibration.active:
+            self._draw_direction(cv2, view, calibration)
 
         if debug:
             for person in detections:
@@ -66,6 +68,8 @@ class AppUi:
 
         for index, text in enumerate(calibration.instructions()):
             self._put_text(cv2, view, text, (30, height - 92 + index * 25), 0.58, (255, 255, 255))
+        if calibration.active and getattr(calibration, "status_message", ""):
+            self._put_text(cv2, view, calibration.status_message, (30, height - 18), 0.58, (80, 230, 230))
 
         panel_height = 92
         canvas = np.zeros((height + panel_height, width, 3), dtype=np.uint8)
@@ -135,6 +139,22 @@ class AppUi:
         cv2.fillPoly(overlay, points, (55, 75, 80))
         cv2.addWeighted(overlay, 0.18, frame, 0.82, 0, frame)
         cv2.polylines(frame, points, True, (80, 230, 230), 2)
+
+    @staticmethod
+    def _draw_direction(cv2, frame, calibration) -> None:
+        line_a = calibration.line_a
+        line_b = calibration.line_b
+        a_mid = (
+            int((line_a[0][0] + line_a[1][0]) / 2),
+            int((line_a[0][1] + line_a[1][1]) / 2),
+        )
+        b_mid = (
+            int((line_b[0][0] + line_b[1][0]) / 2),
+            int((line_b[0][1] + line_b[1][1]) / 2),
+        )
+        cv2.arrowedLine(frame, a_mid, b_mid, (80, 230, 230), 3, tipLength=0.06)
+        cv2.putText(frame, "ORIGEN A", (max(8, a_mid[0] - 44), max(24, a_mid[1] - 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (80, 230, 230), 2)
+        cv2.putText(frame, "DESTINO B", (max(8, b_mid[0] - 44), min(frame.shape[0] - 12, b_mid[1] + 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (80, 230, 230), 2)
 
     @staticmethod
     def _put_text(cv2, frame, text: str, pos: tuple[int, int], scale: float, color, thickness: int = 2) -> None:

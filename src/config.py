@@ -31,7 +31,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "line_b": [],
     "roi": [],
     "track_ttl_frames": 70,
+    "line_orientation": "vertical",
     "entry_direction": "LEFT_TO_RIGHT",
+    "line_a_position": 0.38,
+    "line_b_position": 0.62,
+    "line_separation": 0.24,
+    "min_line_separation": 0.05,
+    "calibration_id": "",
+    "session_id": "",
+    "device_id": "",
+    "zone_id": "",
     "report_timezone": "America/Guayaquil",
     "time_bucket_minutes": 60,
     "live_rate_window_minutes": 5,
@@ -51,7 +60,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 SOURCE_TYPES = {"webcam", "ip_camera", "video_file", "phone_browser"}
-ENTRY_DIRECTIONS = {"LEFT_TO_RIGHT", "RIGHT_TO_LEFT"}
+LINE_ORIENTATIONS = {"vertical", "horizontal"}
+ENTRY_DIRECTIONS_BY_ORIENTATION = {
+    "vertical": {"LEFT_TO_RIGHT", "RIGHT_TO_LEFT"},
+    "horizontal": {"TOP_TO_BOTTOM", "BOTTOM_TO_TOP"},
+}
 
 
 def load_config(path: Path | str = "config.json") -> dict[str, Any]:
@@ -105,8 +118,18 @@ def validate_config(config: dict[str, Any]) -> None:
     _require_number(config, "group_window_seconds", minimum=0.1)
     _require_number(config, "fallback_tracker_max_distance", minimum=1.0)
     _require_int(config, "fallback_tracker_max_missing", minimum=1)
-    if config.get("entry_direction") not in ENTRY_DIRECTIONS:
-        raise ConfigError(f"entry_direction debe ser uno de {sorted(ENTRY_DIRECTIONS)}.")
+    line_orientation = config.get("line_orientation")
+    if line_orientation not in LINE_ORIENTATIONS:
+        raise ConfigError(f"line_orientation debe ser uno de {sorted(LINE_ORIENTATIONS)}.")
+    if config.get("entry_direction") not in ENTRY_DIRECTIONS_BY_ORIENTATION[line_orientation]:
+        raise ConfigError(
+            "entry_direction debe ser uno de "
+            f"{sorted(ENTRY_DIRECTIONS_BY_ORIENTATION[line_orientation])} para orientacion {line_orientation}."
+        )
+    _require_number(config, "line_a_position", minimum=0.0, maximum=1.0)
+    _require_number(config, "line_b_position", minimum=0.0, maximum=1.0)
+    _require_number(config, "line_separation", minimum=0.0, maximum=1.0)
+    _require_number(config, "min_line_separation", minimum=0.01, maximum=0.4)
 
     for key in ("line_a", "line_b"):
         if config.get(key) and not _is_line(config[key]):

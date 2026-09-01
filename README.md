@@ -64,10 +64,16 @@ En la ventana principal:
 - `1`: seleccionar `LINE_A`.
 - `2`: seleccionar `LINE_B`.
 - `R`: seleccionar la zona de deteccion `ROI`.
-- Arrastra con el mouse sobre el video para ubicar la linea vertical o la ROI. `LINE_A` debe quedar del lado de origen y `LINE_B` del lado de destino.
+- `V`: usar lineas verticales.
+- `H`: usar lineas horizontales.
+- `D`: cambiar direccion de ingreso.
+- `X`: intercambiar `LINE_A` y `LINE_B`.
+- Arrastra con el mouse sobre el video para ubicar la linea o la ROI. Con lineas verticales se mueven izquierda/derecha; con lineas horizontales se mueven arriba/abajo. `LINE_A` debe quedar del lado de origen y `LINE_B` del lado de destino.
 - `S`: guardar en `config.json`.
 
-La logica usa el movimiento horizontal del punto inferior-central de la persona. Con `entry_direction` en `LEFT_TO_RIGHT`, cuenta una entrada solo cuando el mismo `track_id` cruza `LINE_A` y luego `LINE_B`. Si cruza `LINE_B` y luego `LINE_A`, se considera salida y no suma.
+La logica usa el punto inferior-central de la persona. Con lineas verticales evalua movimiento en X; con lineas horizontales evalua movimiento en Y. La unica entrada valida es `LINE_A` y luego `LINE_B` con el mismo `track_id`. Si cruza `LINE_B` y luego `LINE_A`, se considera salida y no suma.
+
+En el enlace web, entra a `Calibrar` para usar los botones `Linea A`, `Linea B` y `Zona`. Los cambios quedan como borrador hasta presionar `Guardar`; `Cancelar` descarta cambios y `Restaurar` vuelve a los valores iniciales con confirmacion. La separacion minima entre A y B es 5% del eje usado.
 
 ## Precision con grupos
 

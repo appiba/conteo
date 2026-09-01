@@ -157,6 +157,7 @@ def main() -> int:
         initial_count=storage.count,
         ttl_frames=int(config.get("track_ttl_frames", 45)),
         entry_direction=str(config.get("entry_direction", "LEFT_TO_RIGHT")),
+        line_orientation=str(config.get("line_orientation", "vertical")),
     )
     calibration = CalibrationController(config=config, config_path=config_path)
     sheets = SheetsClient(config)
@@ -233,7 +234,14 @@ def main() -> int:
                         set_running(False)
 
             if running and not calibration.active and detections:
-                update = counter.update(detections, calibration.line_a, calibration.line_b, frame_index)
+                update = counter.update(
+                    detections,
+                    calibration.line_a,
+                    calibration.line_b,
+                    frame_index,
+                    entry_direction=str(config.get("entry_direction", "LEFT_TO_RIGHT")),
+                    line_orientation=str(config.get("line_orientation", "vertical")),
+                )
                 last_events = update.events
                 if bool(config.get("debug", True)):
                     for event in update.events:

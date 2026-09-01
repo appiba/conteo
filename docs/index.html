@@ -110,14 +110,46 @@
           <button class="tool" data-tool="roi" type="button">Zona</button>
         </div>
 
+        <section class="calibration-panel" aria-label="Opciones de calibracion">
+          <div class="calibration-group">
+            <span>Orientacion</span>
+            <div class="segmented">
+              <button class="active" data-orientation="vertical" type="button">Vertical</button>
+              <button data-orientation="horizontal" type="button">Horizontal</button>
+            </div>
+          </div>
+          <div class="calibration-group">
+            <span>Direccion</span>
+            <div class="segmented direction-grid">
+              <button class="active" data-direction="LEFT_TO_RIGHT" type="button">Izq → Der</button>
+              <button data-direction="RIGHT_TO_LEFT" type="button">Der → Izq</button>
+              <button data-direction="BOTTOM_TO_TOP" type="button">Abajo → Arriba</button>
+              <button data-direction="TOP_TO_BOTTOM" type="button">Arriba → Abajo</button>
+            </div>
+          </div>
+          <div class="calibration-status" id="calibrationStatus">Ajusta A, B o Zona y guarda.</div>
+        </section>
+
         <div class="actions">
           <button class="primary" id="saveCalibration" type="button">
             <span class="icon">✓</span>
             <span>Guardar</span>
           </button>
+          <button id="cancelCalibration" type="button">
+            <span class="icon">×</span>
+            <span>Cancelar</span>
+          </button>
           <button id="restoreCalibration" type="button">
             <span class="icon">↺</span>
             <span>Restaurar</span>
+          </button>
+          <button id="swapLines" type="button">
+            <span class="icon">⇄</span>
+            <span>Intercambiar A/B</span>
+          </button>
+          <button id="testCalibration" type="button">
+            <span class="icon">◎</span>
+            <span>Prueba</span>
           </button>
         </div>
       </section>
