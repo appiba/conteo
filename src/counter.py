@@ -32,6 +32,7 @@ class CounterUpdate:
 @dataclass
 class TrackMemory:
     phase: str = "NEW"
+    first_point: Point | None = None
     previous_point: Point | None = None
     last_seen: int = 0
     counted: bool = False
@@ -79,12 +80,24 @@ class EntryCounter:
             active_ids.add(person.track_id)
             memory = self._tracks.setdefault(person.track_id, TrackMemory())
             current_point = person.bottom_center
+            if memory.first_point is None:
+                memory.first_point = current_point
             crossings = self._crossings(memory.previous_point, current_point, line_a, line_b)
             memory.last_seen = frame_index
 
             for crossing in crossings:
+                if self._should_count_late_entry(memory, current_point, line_b, crossing):
+                    if self._confirm_entry(memory, person, events):
+                        increment += 1
+                        self.total += 1
+                    continue
                 counted = self._apply_crossing(memory, person, crossing, events)
                 if counted:
+                    increment += 1
+                    self.total += 1
+
+            if self._should_complete_edge_entry(memory, current_point, line_b):
+                if self._confirm_entry(memory, person, events):
                     increment += 1
                     self.total += 1
 
@@ -98,9 +111,9 @@ class EntryCounter:
 
     def _crossings(self, previous: Point | None, current: Point, line_a: Line, line_b: Line) -> list[str]:
         crossed = []
-        if movement_crossed_line(previous, current, line_a, self.line_orientation):
+        if self._movement_crossed_line(previous, current, line_a):
             crossed.append(("A", line_axis_mid(line_a, self.line_orientation)))
-        if movement_crossed_line(previous, current, line_b, self.line_orientation):
+        if self._movement_crossed_line(previous, current, line_b):
             crossed.append(("B", line_axis_mid(line_b, self.line_orientation)))
         if len(crossed) <= 1:
             return [name for name, _axis_mid in crossed]
@@ -109,6 +122,12 @@ class EntryCounter:
         delta = current[axis] - (previous[axis] if previous else current[axis])
         crossed.sort(key=lambda item: item[1], reverse=delta < 0)
         return [name for name, _axis_mid in crossed]
+
+    def _movement_crossed_line(self, previous: Point | None, current: Point, line: Line) -> bool:
+        other_axis = 0 if self.line_orientation == "horizontal" else 1
+        line_span = abs(line[0][other_axis] - line[1][other_axis])
+        line_margin = max(8.0, line_span * 0.12)
+        return movement_crossed_line(previous, current, line, self.line_orientation, line_margin=line_margin)
 
     def _apply_crossing(
         self,
@@ -155,19 +174,7 @@ class EntryCounter:
             return False
 
         if memory.phase == "CROSSED_A" and crossing == "B":
-            memory.phase = "COUNTED"
-            memory.counted = True
-            events.append(
-                CounterEvent(
-                    track_id=track_id,
-                    kind="entry",
-                    message=f"ID {track_id}: ENTRADA CONFIRMADA",
-                    age_group=person.age_group,
-                    age_confidence=person.age_confidence,
-                    confidence=person.confidence,
-                )
-            )
-            return True
+            return self._confirm_entry(memory, person, events)
 
         if memory.phase == "CROSSED_B" and crossing == "A":
             memory.phase = "EXITED"
@@ -184,3 +191,76 @@ class EntryCounter:
             return False
 
         return False
+
+    def _should_count_late_entry(
+        self,
+        memory: TrackMemory,
+        current: Point,
+        line_b: Line,
+        crossing: str,
+    ) -> bool:
+        if memory.counted or memory.phase != "NEW" or crossing != "B":
+            return False
+        if memory.previous_point is None or memory.first_point is None:
+            return False
+        return (
+            self._crossed_destination_axis(memory.previous_point, current, line_b)
+            and self._point_before_destination(memory.first_point, line_b)
+        )
+
+    def _should_complete_edge_entry(self, memory: TrackMemory, current: Point, line_b: Line) -> bool:
+        if memory.counted or memory.phase != "CROSSED_A" or memory.previous_point is None:
+            return False
+        if not self._moving_in_entry_direction(memory.previous_point, current):
+            return False
+        return self._crossed_destination_axis(memory.previous_point, current, line_b) or self._passed_destination(
+            current,
+            line_b,
+            tolerance=0.0,
+        )
+
+    def _confirm_entry(self, memory: TrackMemory, person: TrackedPerson, events: list[CounterEvent]) -> bool:
+        if memory.counted:
+            return False
+        memory.phase = "COUNTED"
+        memory.counted = True
+        events.append(
+            CounterEvent(
+                track_id=person.track_id,
+                kind="entry",
+                message=f"ID {person.track_id}: ENTRADA CONFIRMADA",
+                age_group=person.age_group,
+                age_confidence=person.age_confidence,
+                confidence=person.confidence,
+            )
+        )
+        return True
+
+    def _crossed_destination_axis(self, previous: Point, current: Point, line_b: Line) -> bool:
+        if not self._moving_in_entry_direction(previous, current):
+            return False
+        gate = line_axis_mid(line_b, self.line_orientation)
+        previous_axis = self._axis_value(previous)
+        current_axis = self._axis_value(current)
+        return (previous_axis < gate <= current_axis) or (previous_axis > gate >= current_axis)
+
+    def _moving_in_entry_direction(self, previous: Point, current: Point) -> bool:
+        return (self._axis_value(current) - self._axis_value(previous)) * self._entry_sign() > 1e-6
+
+    def _point_before_destination(self, point: Point, line_b: Line) -> bool:
+        return (self._axis_value(point) - line_axis_mid(line_b, self.line_orientation)) * self._entry_sign() < 0
+
+    def _passed_destination(self, point: Point, line_b: Line, tolerance: float = 0.0) -> bool:
+        gate = line_axis_mid(line_b, self.line_orientation)
+        axis = self._axis_value(point)
+        other_axis = 0 if self.line_orientation == "horizontal" else 1
+        line_size = abs(line_b[0][other_axis] - line_b[1][other_axis]) or 1.0
+        return (axis - gate) * self._entry_sign() >= -(line_size * tolerance)
+
+    def _axis_value(self, point: Point) -> float:
+        return point[1] if self.line_orientation == "horizontal" else point[0]
+
+    def _entry_sign(self) -> int:
+        if self.line_orientation == "horizontal":
+            return -1 if self.entry_direction == "BOTTOM_TO_TOP" else 1
+        return -1 if self.entry_direction == "RIGHT_TO_LEFT" else 1

@@ -37,6 +37,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "line_b_position": 0.62,
     "line_separation": 0.24,
     "min_line_separation": 0.05,
+    "counting_roi_margin": 0.10,
+    "line_crossing_margin_ratio": 0.12,
+    "late_entry_completion": True,
     "calibration_id": "",
     "session_id": "",
     "device_id": "",
@@ -152,6 +155,8 @@ def validate_config(config: dict[str, Any]) -> None:
     _require_number(config, "line_b_position", minimum=0.0, maximum=1.0)
     _require_number(config, "line_separation", minimum=0.0, maximum=1.0)
     _require_number(config, "min_line_separation", minimum=0.01, maximum=0.4)
+    _require_number(config, "counting_roi_margin", minimum=0.0, maximum=0.25)
+    _require_number(config, "line_crossing_margin_ratio", minimum=0.0, maximum=0.35)
 
     for key in ("line_a", "line_b"):
         if config.get(key) and not _is_line(config[key]):

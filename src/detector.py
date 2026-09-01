@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .geometry import point_in_polygon
+from .geometry import point_in_polygon_with_margin
 from .tracker import SimpleCentroidTracker, TrackedPerson
 
 
@@ -79,11 +79,13 @@ class PersonDetector:
         people: list[TrackedPerson] = []
         fallback_detections = []
         self.last_stats = DetectorStats(raw_person_detections=len(xyxy))
+        height, width = frame.shape[:2]
+        roi_margin = float(self.config.get("counting_roi_margin", 0.10)) * max(width, height)
         for index, box_values in enumerate(xyxy):
             box = tuple(float(value) for value in box_values)
             confidence = float(confidences[index])
             point = ((box[0] + box[2]) / 2.0, box[3])
-            if not point_in_polygon(point, roi):
+            if not point_in_polygon_with_margin(point, roi, roi_margin):
                 continue
             self.last_stats.roi_person_detections += 1
             if ids is None:

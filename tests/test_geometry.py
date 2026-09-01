@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.geometry import (
+    default_geometry,
     default_line_positions,
     direction_positions_valid,
     line_from_position,
@@ -16,6 +17,11 @@ class GeometryTest(unittest.TestCase):
         a, b = default_line_positions("vertical", "LEFT_TO_RIGHT")
         self.assertLess(a, b)
         self.assertTrue(direction_positions_valid(a, b, "vertical", "LEFT_TO_RIGHT"))
+
+    def test_default_roi_reaches_near_frame_edges(self):
+        _line_a, _line_b, roi = default_geometry(1000, 1000)
+        self.assertEqual(roi[0], (20, 40))
+        self.assertEqual(roi[2], (980, 980))
 
     def test_default_vertical_right_to_left_places_a_after_b(self):
         a, b = default_line_positions("vertical", "RIGHT_TO_LEFT")

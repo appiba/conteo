@@ -37,13 +37,13 @@ def default_geometry(
     orientation: str = "vertical",
     entry_direction: str = "LEFT_TO_RIGHT",
 ) -> tuple[Line, Line, Polygon]:
-    y1 = int(height * 0.12)
-    y2 = int(height * 0.92)
+    y1 = int(height * 0.04)
+    y2 = int(height * 0.98)
     roi = [
-        (int(width * 0.08), y1),
-        (int(width * 0.92), y1),
-        (int(width * 0.92), y2),
-        (int(width * 0.08), y2),
+        (int(width * 0.02), y1),
+        (int(width * 0.98), y1),
+        (int(width * 0.98), y2),
+        (int(width * 0.02), y2),
     ]
     a_position, b_position = default_line_positions(orientation, entry_direction)
     return (
@@ -145,6 +145,17 @@ def point_in_polygon(point: Point, polygon: Polygon) -> bool:
     return inside
 
 
+def point_in_polygon_with_margin(point: Point, polygon: Polygon, margin: float = 0.0) -> bool:
+    if point_in_polygon(point, polygon):
+        return True
+    if not polygon or margin <= 0:
+        return False
+    x, y = point
+    xs = [item[0] for item in polygon]
+    ys = [item[1] for item in polygon]
+    return min(xs) - margin <= x <= max(xs) + margin and min(ys) - margin <= y <= max(ys) + margin
+
+
 def segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool:
     o1 = _orientation(a, b, c)
     o2 = _orientation(a, b, d)
@@ -176,7 +187,7 @@ def horizontal_crossed_line(previous: Point | None, current: Point, line: Line) 
     return movement_crossed_line(previous, current, line, "vertical")
 
 
-def movement_crossed_line(previous: Point | None, current: Point, line: Line, orientation: str) -> bool:
+def movement_crossed_line(previous: Point | None, current: Point, line: Line, orientation: str, line_margin: float = 8.0) -> bool:
     if previous is None:
         return False
 
@@ -200,7 +211,7 @@ def movement_crossed_line(previous: Point | None, current: Point, line: Line, or
 
     crossing_other = previous[other_axis] + (current[other_axis] - previous[other_axis]) * progress
     line_min, line_max = sorted((line[0][other_axis], line[1][other_axis]))
-    return line_min - 8.0 <= crossing_other <= line_max + 8.0
+    return line_min - line_margin <= crossing_other <= line_max + line_margin
 
 
 def _orientation(a: Point, b: Point, c: Point) -> int:

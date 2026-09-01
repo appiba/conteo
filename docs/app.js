@@ -20,9 +20,9 @@ const CAMERA_CONFIG_FIELDS = [
 ];
 
 const DEFAULT_CONFIG = {
-  lineA: [{ x: 0.38, y: 0.12 }, { x: 0.38, y: 0.92 }],
-  lineB: [{ x: 0.62, y: 0.12 }, { x: 0.62, y: 0.92 }],
-  roi: [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }],
+  lineA: [{ x: 0.38, y: 0.04 }, { x: 0.38, y: 0.98 }],
+  lineB: [{ x: 0.62, y: 0.04 }, { x: 0.62, y: 0.98 }],
+  roi: [{ x: 0.02, y: 0.04 }, { x: 0.98, y: 0.04 }, { x: 0.98, y: 0.98 }, { x: 0.02, y: 0.98 }],
   lineOrientation: "vertical",
   entryDirection: "LEFT_TO_RIGHT",
   lineAPosition: 0.38,
@@ -59,6 +59,9 @@ const GROUP_WINDOW_SECONDS = 2;
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.05;
 const CAMERA_START_TIMEOUT_MS = 25000;
+const ROI_EDGE_TOLERANCE = 0.10;
+const LINE_EDGE_TOLERANCE = 0.12;
+const LEGACY_INSET_ROI = [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }];
 
 const state = {
   stream: null,
@@ -142,6 +145,7 @@ const els = {
   saveCalibration: document.querySelector("#saveCalibration"),
   cancelCalibration: document.querySelector("#cancelCalibration"),
   restoreCalibration: document.querySelector("#restoreCalibration"),
+  expandRoi: document.querySelector("#expandRoi"),
   swapLines: document.querySelector("#swapLines"),
   testCalibration: document.querySelector("#testCalibration"),
   calibrationStatus: document.querySelector("#calibrationStatus"),
@@ -271,6 +275,20 @@ function wireUi() {
     renderAll();
     setStatus("Restaurado");
   });
+
+  if (els.expandRoi) {
+    els.expandRoi.addEventListener("click", () => {
+      ensureCalibrationDraft();
+      const next = cloneConfig(state.calibrationDraft);
+      next.roi = cloneConfig(DEFAULT_CONFIG.roi);
+      syncLineSpansToRoi(next);
+      updateCalibrationMetadata(next);
+      state.calibrationDraft = next;
+      setCalibrationStatus("Zona ampliada al borde. Presiona Guardar.", "warning");
+      renderAll();
+      setStatus("Zona al borde");
+    });
+  }
 
   els.swapLines.addEventListener("click", () => {
     ensureCalibrationDraft();
@@ -1090,6 +1108,7 @@ function updateTracks(detections, config = state.config) {
     const detection = detections[candidate.index];
     if (!track || !detection) return;
     const point = bottomCenter(detection.box);
+    if (!track.firstPoint) track.firstPoint = track.point;
     track.previousPoint = track.point;
     track.point = point;
     track.box = detection.box;
@@ -1111,6 +1130,7 @@ function updateTracks(detections, config = state.config) {
     const point = bottomCenter(detection.box);
     const id = state.nextTrackId++;
     const track = {
+      firstPoint: point,
       point,
       previousPoint: null,
       box: detection.box,
@@ -1123,7 +1143,7 @@ function updateTracks(detections, config = state.config) {
     active.push({ id, ...track });
   });
 
-  return active.filter((track) => pointInPolygon(track.point, config.roi));
+  return active.filter((track) => trackInCountingZone(track, config));
 }
 
 function updateCount(tracks, config = state.config) {
@@ -1131,17 +1151,35 @@ function updateCount(tracks, config = state.config) {
     const stored = state.tracks.get(track.id);
     if (!stored || stored.counted || !track.previousPoint) return;
 
+    let countedThisTrack = false;
     orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
+      if (countedThisTrack) return;
       console.debug(`Track ${track.id} crossed ${crossing}`);
+      if (shouldCountLateEntry(stored, track, crossing, config)) {
+        confirmTrackEntry(stored, track);
+        countedThisTrack = true;
+        return;
+      }
       if (applyCrossing(stored, crossing)) {
-        registerEntry(track);
-        console.debug(`Track ${track.id} ENTRY CONFIRMED`);
-        saveState();
-        renderAll();
-        setStatus("Entrada");
+        confirmTrackEntry(stored, track);
+        countedThisTrack = true;
       }
     });
+
+    if (!countedThisTrack && shouldCompleteEdgeEntry(stored, track, config)) {
+      confirmTrackEntry(stored, track);
+    }
   });
+}
+
+function confirmTrackEntry(stored, track) {
+  stored.phase = "counted";
+  stored.counted = true;
+  registerEntry(track);
+  console.debug(`Track ${track.id} ENTRY CONFIRMED`);
+  saveState();
+  renderAll();
+  setStatus("Entrada");
 }
 
 function logDebugCounts(detectedPersons, activeTracks) {
@@ -1501,6 +1539,85 @@ function applyCrossing(track, crossing) {
   return false;
 }
 
+function shouldCountLateEntry(stored, track, crossing, config = state.config) {
+  if (stored.counted || stored.phase !== "new" || crossing !== "B") return false;
+  if (!track.previousPoint || !track.firstPoint) return false;
+  return crossedDestinationInEntryDirection(track.previousPoint, track.point, config)
+    && pointStartedBeforeDestination(track.firstPoint, config)
+    && pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE);
+}
+
+function shouldCompleteEdgeEntry(stored, track, config = state.config) {
+  if (stored.counted || stored.phase !== "crossedA" || !track.previousPoint) return false;
+  if (!movingInEntryDirection(track.previousPoint, track.point, config)) return false;
+  if (crossedDestinationInEntryDirection(track.previousPoint, track.point, config)) return true;
+  return passedDestinationGate(track.point, config, 0.04) && boxTouchesFrameEdge(track.box);
+}
+
+function crossedDestinationInEntryDirection(previous, current, config = state.config) {
+  return movingInEntryDirection(previous, current, config)
+    && crossedLineAxis(previous, current, config.lineB, config);
+}
+
+function crossedLineAxis(previous, current, line, config = state.config) {
+  if (!previous || !current) return false;
+  const gate = lineAxisPixel(line, config);
+  const previousAxis = pointAxisPixel(previous, config);
+  const currentAxis = pointAxisPixel(current, config);
+  return (previousAxis < gate && currentAxis >= gate) || (previousAxis > gate && currentAxis <= gate);
+}
+
+function movingInEntryDirection(previous, current, config = state.config) {
+  const delta = pointAxisPixel(current, config) - pointAxisPixel(previous, config);
+  const minimum = Math.max(1, axisPixelSize(config) * 0.002);
+  return delta * entryDirectionSign(config) >= minimum;
+}
+
+function pointStartedBeforeDestination(point, config = state.config) {
+  const gate = lineAxisPixel(config.lineB, config);
+  const axis = pointAxisPixel(point, config);
+  return (axis - gate) * entryDirectionSign(config) < 0;
+}
+
+function passedDestinationGate(point, config = state.config, tolerance = 0) {
+  const gate = lineAxisPixel(config.lineB, config);
+  const axis = pointAxisPixel(point, config);
+  const tolerancePx = axisPixelSize(config) * tolerance;
+  return (axis - gate) * entryDirectionSign(config) >= -tolerancePx;
+}
+
+function entryDirectionSign(config = state.config) {
+  if (config.lineOrientation === "horizontal") {
+    return config.entryDirection === "BOTTOM_TO_TOP" ? -1 : 1;
+  }
+  return config.entryDirection === "RIGHT_TO_LEFT" ? -1 : 1;
+}
+
+function pointAxisPixel(point, config = state.config) {
+  return config.lineOrientation === "horizontal" ? point.y : point.x;
+}
+
+function lineAxisPixel(line, config = state.config) {
+  return lineAxisMid(line, config) * axisPixelSize(config);
+}
+
+function axisPixelSize(config = state.config) {
+  return config.lineOrientation === "horizontal"
+    ? (els.camera.videoHeight || els.calibrationOverlay.height || 1)
+    : (els.camera.videoWidth || els.calibrationOverlay.width || 1);
+}
+
+function boxTouchesFrameEdge(box) {
+  const width = els.camera.videoWidth || 1;
+  const height = els.camera.videoHeight || 1;
+  const marginX = width * 0.035;
+  const marginY = height * 0.055;
+  return box.x <= marginX
+    || box.x + box.w >= width - marginX
+    || box.y <= marginY
+    || box.y + box.h >= height - marginY;
+}
+
 function lineAxisMid(line, config = state.config) {
   const axis = config.lineOrientation === "horizontal" ? "y" : "x";
   return (line[0][axis] + line[1][axis]) / 2;
@@ -1528,6 +1645,16 @@ function roiBounds(roi) {
     top: Math.min(...ys),
     bottom: Math.max(...ys),
   };
+}
+
+function isLegacyInsetRoi(roi) {
+  if (!isRoi(roi)) return false;
+  const current = roiBounds(roi);
+  const legacy = roiBounds(LEGACY_INSET_ROI);
+  return Math.abs(current.left - legacy.left) <= 0.025
+    && Math.abs(current.right - legacy.right) <= 0.025
+    && Math.abs(current.top - legacy.top) <= 0.025
+    && Math.abs(current.bottom - legacy.bottom) <= 0.025;
 }
 
 function isLine(value) {
@@ -1656,7 +1783,7 @@ function normalizeConfig(config, options = {}) {
   normalized.entryDirection = normalizeDirection(config.entryDirection, normalized.lineOrientation);
 
   if (isRoi(config.roi)) {
-    normalized.roi = config.roi;
+    normalized.roi = isLegacyInsetRoi(config.roi) ? cloneConfig(DEFAULT_CONFIG.roi) : config.roi;
   }
 
   if (isLine(config.lineA)) normalized.lineA = config.lineA;
@@ -2322,8 +2449,11 @@ function crossedLine(previous, current, line, config = state.config) {
   if (progress < 0 || progress > 1) return false;
 
   const crossingOther = previous[otherAxis] + (current[otherAxis] - previous[otherAxis]) * progress;
-  const lineMin = Math.min(a[otherAxis], b[otherAxis]) - 8;
-  const lineMax = Math.max(a[otherAxis], b[otherAxis]) + 8;
+  const span = Math.abs(a[otherAxis] - b[otherAxis]);
+  const frameOther = orientation === "horizontal" ? (els.camera.videoWidth || 1) : (els.camera.videoHeight || 1);
+  const tolerance = Math.max(8, span * LINE_EDGE_TOLERANCE, frameOther * 0.04);
+  const lineMin = Math.min(a[otherAxis], b[otherAxis]) - tolerance;
+  const lineMax = Math.max(a[otherAxis], b[otherAxis]) + tolerance;
   return crossingOther >= lineMin && crossingOther <= lineMax;
 }
 
@@ -2340,6 +2470,27 @@ function pointInPolygon(point, polygon) {
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+function trackInCountingZone(track, config = state.config) {
+  if (pointInPolygon(track.point, config.roi)) return true;
+  if (pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE)) return true;
+  if (track.previousPoint && (crossedLineAxis(track.previousPoint, track.point, config.lineA, config)
+    || crossedLineAxis(track.previousPoint, track.point, config.lineB, config))) {
+    return pointInRoiBounds(track.previousPoint, config.roi, ROI_EDGE_TOLERANCE)
+      || pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE);
+  }
+  return false;
+}
+
+function pointInRoiBounds(point, roi, tolerance = 0) {
+  const px = point.x / (els.camera.videoWidth || 1);
+  const py = point.y / (els.camera.videoHeight || 1);
+  const bounds = roiBounds(roi);
+  return px >= bounds.left - tolerance
+    && px <= bounds.right + tolerance
+    && py >= bounds.top - tolerance
+    && py <= bounds.bottom + tolerance;
 }
 
 function guayaquilParts(date) {

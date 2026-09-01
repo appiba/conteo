@@ -57,6 +57,15 @@ class EntryCounterTest(unittest.TestCase):
     def test_does_not_count_when_person_backs_out_after_a(self):
         self.assertEqual(self.run_path([50, 120, 80, 50]), 0)
 
+    def test_counts_late_entry_when_close_person_starts_between_lines(self):
+        self.assertEqual(self.run_path([150, 220]), 1)
+
+    def test_counts_crossing_near_frame_edge(self):
+        self.assertEqual(self.run_path([(50, 330), (120, 330), (220, 330)]), 1)
+
+    def test_near_edge_exit_still_does_not_count(self):
+        self.assertEqual(self.run_path([(250, 330), (180, 330), (80, 330)]), 0)
+
     def test_does_not_double_count_same_track_after_counted(self):
         self.assertEqual(self.run_path([50, 120, 160, 220, 180, 220, 210]), 1)
 
