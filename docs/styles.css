@@ -166,6 +166,43 @@ canvas {
   font-size: 13px;
 }
 
+.camera-fix {
+  display: grid;
+  gap: 8px;
+  width: min(270px, 100%);
+  margin: 10px auto 0;
+}
+
+.camera-fix[hidden] {
+  display: none;
+}
+
+.camera-link,
+.camera-copy {
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #1f3328;
+  border-radius: 8px;
+  background: #111b16;
+  color: #dff8ea;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.camera-link.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #031008;
+}
+
+.camera-fix small {
+  color: #bde8cf;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .counter-card {
   margin-top: 12px;
   padding: 16px;

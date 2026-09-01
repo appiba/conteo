@@ -76,6 +76,10 @@ const els = {
   calibrationOverlay: document.querySelector("#calibrationOverlay"),
   helpOverlay: document.querySelector("#helpOverlay"),
   videoEmpty: document.querySelector("#videoEmpty"),
+  cameraFix: document.querySelector("#cameraFix"),
+  openExternalBrowser: document.querySelector("#openExternalBrowser"),
+  copyAppLink: document.querySelector("#copyAppLink"),
+  cameraHelpText: document.querySelector("#cameraHelpText"),
   calibrationEmpty: document.querySelector("#calibrationEmpty"),
   countValue: document.querySelector("#countValue"),
   detectedCount: document.querySelector("#detectedCount"),
@@ -157,6 +161,19 @@ function wireUi() {
     renderDebugMetrics();
   });
 
+  if (els.copyAppLink) {
+    els.copyAppLink.addEventListener("click", async () => {
+      const url = appUrl();
+      try {
+        await navigator.clipboard.writeText(url);
+        setStatus("Link copiado");
+        setCameraHelpText("Link copiado. Pegalo en Safari o Chrome.");
+      } catch (_error) {
+        prompt("Copia este link y pegalo en Safari o Chrome:", url);
+      }
+    });
+  }
+
   els.saveCalibration.addEventListener("click", () => {
     ensureCalibrationDraft();
     const validation = validateCalibration(state.calibrationDraft);
@@ -237,31 +254,42 @@ function wireUi() {
 }
 
 async function startCamera() {
+  if (state.running) return;
+  resetCameraEmpty();
+  let cameraOpened = false;
   try {
-    setStatus("Cargando");
-    await loadModel();
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-    });
-    [els.camera, els.calibrationMirror, els.helpMirror].forEach((video) => {
-      video.srcObject = state.stream;
-      video.play();
-    });
+    setStatus("Camara");
+    state.stream = await requestCameraStream();
+    cameraOpened = true;
+    attachCameraStream(state.stream);
     state.running = true;
     startSession();
     els.videoEmpty.hidden = true;
     els.calibrationEmpty.hidden = true;
     els.toggleCamera.innerHTML = '<span class="icon">■</span><span>Detener</span>';
+    setStatus("Cargando IA");
+    await loadModel();
+    if (!state.running || !state.stream) return;
     setStatus("Contando");
     requestAnimationFrame(loop);
   } catch (error) {
-    setStatus("Sin camara");
-    alert("No pude abrir la camara. Revisa que el navegador tenga permiso de camara.\n\n" + error.message);
+    if (cameraOpened && !error.cameraReason) {
+      error.cameraReason = "model";
+    }
+    const info = cameraFailureInfo(error);
+    if (state.stream) {
+      state.stream.getTracks().forEach((track) => track.stop());
+      state.stream = null;
+    }
+    state.running = false;
+    endSession();
+    els.videoEmpty.hidden = false;
+    els.calibrationEmpty.hidden = false;
+    els.toggleCamera.innerHTML = '<span class="icon">▶</span><span>Iniciar</span>';
+    setCameraEmpty(info.title, info.message);
+    showCameraFix(info);
+    setStatus(info.status);
+    console.warn("Camera start failed", error);
   }
 }
 
@@ -273,8 +301,177 @@ function stopCamera() {
   state.running = false;
   endSession();
   els.videoEmpty.hidden = false;
+  els.calibrationEmpty.hidden = false;
+  resetCameraEmpty();
   els.toggleCamera.innerHTML = '<span class="icon">▶</span><span>Iniciar</span>';
   setStatus("Detenido");
+}
+
+async function requestCameraStream() {
+  if (!isSecureCameraContext()) {
+    throw cameraStartError("insecure", "La camara solo funciona con HTTPS o localhost.");
+  }
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+    throw cameraStartError("unsupported", "Este navegador no permite abrir la camara desde la pagina.");
+  }
+
+  const attempts = [
+    {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    },
+    { audio: false, video: { facingMode: { ideal: "environment" } } },
+    { audio: false, video: true },
+  ];
+  let lastError = null;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) {
+      lastError = error;
+      if (isPermissionError(error)) break;
+    }
+  }
+  throw lastError || cameraStartError("unknown", "No se pudo abrir la camara.");
+}
+
+function attachCameraStream(stream) {
+  [els.camera, els.calibrationMirror, els.helpMirror].forEach((video) => {
+    video.srcObject = stream;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {});
+    }
+  });
+}
+
+function cameraStartError(reason, message) {
+  const error = new Error(message);
+  error.cameraReason = reason;
+  return error;
+}
+
+function isSecureCameraContext() {
+  return location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
+}
+
+function isPermissionError(error) {
+  return ["NotAllowedError", "SecurityError", "PermissionDeniedError"].includes(error && error.name);
+}
+
+function isLikelyInAppBrowser() {
+  const ua = navigator.userAgent || "";
+  return /WhatsApp|FBAN|FBAV|Instagram|Line|MicroMessenger|Snapchat|TikTok/i.test(ua);
+}
+
+function cameraFailureInfo(error) {
+  const name = error && error.name;
+  const message = error && error.message ? error.message : "";
+  if (error && error.cameraReason === "insecure") {
+    return {
+      title: "Abre el link seguro",
+      message: "La camara necesita HTTPS. Usa el link de GitHub Pages.",
+      status: "Sin HTTPS",
+      help: appUrl(),
+    };
+  }
+  if (error && error.cameraReason === "unsupported") {
+    return {
+      title: "Abre en Safari/Chrome",
+      message: "Este navegador no deja usar la camara desde aqui.",
+      status: "Navegador",
+      help: "Toca Abrir en Safari/Chrome o copia el link y pegalo fuera de WhatsApp.",
+    };
+  }
+  if (error && error.cameraReason === "model") {
+    return {
+      title: "Camara abierta, falta IA",
+      message: "No cargo el modelo de deteccion. Revisa internet y vuelve a iniciar.",
+      status: "Sin IA",
+      help: "La camara funciona, pero falta cargar la deteccion de personas.",
+    };
+  }
+  if (isLikelyInAppBrowser()) {
+    return {
+      title: "Abre en Safari/Chrome",
+      message: "WhatsApp puede bloquear la camara. Abre este link en Safari o Chrome.",
+      status: "Abrir Safari",
+      help: "Toca Abrir en Safari/Chrome. Si no abre, copia el link y pegalo en Safari.",
+    };
+  }
+  if (isPermissionError(error)) {
+    return {
+      title: "Permite la camara",
+      message: "El navegador tiene bloqueado el permiso de camara para esta pagina.",
+      status: "Permiso",
+      help: "En iPhone toca el icono del sitio en la barra de Safari, permite Camara y vuelve a presionar Iniciar.",
+    };
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return {
+      title: "No encontre camara",
+      message: "El navegador no ve una camara disponible.",
+      status: "Sin camara",
+      help: "Cierra otras apps que usen camara y vuelve a intentarlo.",
+    };
+  }
+  if (name === "NotReadableError" || name === "TrackStartError") {
+    return {
+      title: "Camara ocupada",
+      message: "Otra app o pestaña esta usando la camara.",
+      status: "Ocupada",
+      help: "Cierra camara, videollamadas u otras pestañas y vuelve a iniciar.",
+    };
+  }
+  return {
+    title: "No pude abrir la camara",
+    message: "Revisa el permiso de camara y vuelve a intentar.",
+    status: "Sin camara",
+    help: message || "Abre el link en Safari o Chrome y permite la camara.",
+  };
+}
+
+function setCameraEmpty(title, message) {
+  const titleEl = els.videoEmpty.querySelector("strong");
+  const messageEl = els.videoEmpty.querySelector("span");
+  if (titleEl) titleEl.textContent = title;
+  if (messageEl) messageEl.textContent = message;
+}
+
+function resetCameraEmpty() {
+  setCameraEmpty("Listo para contar", "Presiona INICIAR y permite la camara.");
+  if (els.cameraFix) els.cameraFix.hidden = true;
+}
+
+function showCameraFix(info) {
+  if (!els.cameraFix) return;
+  els.cameraFix.hidden = false;
+  if (els.openExternalBrowser) {
+    els.openExternalBrowser.href = externalBrowserUrl();
+  }
+  setCameraHelpText(info.help);
+}
+
+function setCameraHelpText(text) {
+  if (els.cameraHelpText) {
+    els.cameraHelpText.textContent = text || "Abre este link en Safari o Chrome y permite la camara.";
+  }
+}
+
+function appUrl() {
+  return `${location.origin}${location.pathname}${location.search || ""}`;
+}
+
+function externalBrowserUrl() {
+  const current = appUrl();
+  if (/Android/i.test(navigator.userAgent || "") && location.protocol === "https:") {
+    return `intent://${location.host}${location.pathname}${location.search || ""}#Intent;scheme=https;package=com.android.chrome;end`;
+  }
+  return current;
 }
 
 async function loadModel() {

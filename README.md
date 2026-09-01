@@ -10,6 +10,8 @@ https://appiba.github.io/conteo/
 
 Esa version web funciona desde celular o computadora usando la camara del navegador. La version Python sigue siendo la opcion local con YOLO/OpenCV.
 
+En iPhone, si el link se abre desde WhatsApp y aparece un bloqueo de camara, toca `Abrir en Safari/Chrome` dentro de la app o copia el link y pegalo directamente en Safari. Luego permite la camara desde el aviso del navegador.
+
 ## Instalar
 
 En Windows, con Python 3.10 o superior:
