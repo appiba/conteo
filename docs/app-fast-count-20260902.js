@@ -159,6 +159,7 @@ const els = {
   cancelCalibration: document.querySelector("#cancelCalibration"),
   restoreCalibration: document.querySelector("#restoreCalibration"),
   expandRoi: document.querySelector("#expandRoi"),
+  centerLines: document.querySelector("#centerLines"),
   swapLines: document.querySelector("#swapLines"),
   testCalibration: document.querySelector("#testCalibration"),
   calibrationStatus: document.querySelector("#calibrationStatus"),
@@ -300,6 +301,19 @@ function wireUi() {
       setCalibrationStatus("Zona ampliada al borde. Presiona Guardar.", "warning");
       renderAll();
       setStatus("Zona al borde");
+    });
+  }
+
+  if (els.centerLines) {
+    els.centerLines.addEventListener("click", () => {
+      ensureCalibrationDraft();
+      const next = cloneConfig(state.calibrationDraft);
+      centerLinePair(next);
+      updateCalibrationMetadata(next);
+      state.calibrationDraft = next;
+      setCalibrationStatus("A y B centradas. Presiona Guardar.", "warning");
+      renderAll();
+      setStatus("Lineas centradas");
     });
   }
 
@@ -2370,7 +2384,7 @@ function addCalibrationPointerEvents() {
       }
     }
     const point = pointerToNorm(event, canvas);
-    state.dragging = { start: point, current: point, pointerId: event.pointerId };
+    state.dragging = { start: point, current: point, pointerId: event.pointerId, baseConfig: cloneConfig(draftConfig()) };
     applyDragGeometry();
     drawCalibration();
   });
@@ -2396,12 +2410,14 @@ function addCalibrationPointerEvents() {
 }
 
 function applyDragGeometry() {
-  const { start, current } = state.dragging;
+  const { start, current, baseConfig } = state.dragging;
   const config = draftConfig();
   if (state.activeTool === "lineA") {
     config.lineA = lineAt(config.lineOrientation === "horizontal" ? current.y : current.x, config);
   } else if (state.activeTool === "lineB") {
     config.lineB = lineAt(config.lineOrientation === "horizontal" ? current.y : current.x, config);
+  } else if (state.activeTool === "linePair") {
+    moveLinePair(config, baseConfig || config, start, current);
   } else {
     const left = Math.min(start.x, current.x);
     const right = Math.max(start.x, current.x);
@@ -2418,6 +2434,54 @@ function applyDragGeometry() {
   state.calibrationDraft = config;
   const validation = validateCalibration(config);
   setCalibrationStatus(validation.message, validation.kind);
+}
+
+function moveLinePair(config, baseConfig, start, current) {
+  const orientation = normalizeOrientation(config.lineOrientation);
+  const axis = orientation === "horizontal" ? "y" : "x";
+  const delta = current[axis] - start[axis];
+  const baseA = linePosition(baseConfig.lineA, config);
+  const baseB = linePosition(baseConfig.lineB, config);
+  const [nextA, nextB] = constrainLinePair(baseA + delta, baseB + delta, config);
+  config.lineA = lineAt(nextA, config);
+  config.lineB = lineAt(nextB, config);
+}
+
+function centerLinePair(config) {
+  const a = linePosition(config.lineA, config);
+  const b = linePosition(config.lineB, config);
+  const separation = Math.abs(a - b);
+  const bounds = lineAxisBounds(config);
+  const center = (bounds.min + bounds.max) / 2;
+  const direction = a <= b ? 1 : -1;
+  const [nextA, nextB] = constrainLinePair(
+    center - (separation / 2) * direction,
+    center + (separation / 2) * direction,
+    config,
+  );
+  config.lineA = lineAt(nextA, config);
+  config.lineB = lineAt(nextB, config);
+}
+
+function constrainLinePair(aPosition, bPosition, config) {
+  const bounds = lineAxisBounds(config);
+  const pairMin = Math.min(aPosition, bPosition);
+  const pairMax = Math.max(aPosition, bPosition);
+  let offset = 0;
+  if (pairMin < bounds.min) offset = bounds.min - pairMin;
+  if (pairMax + offset > bounds.max) offset = bounds.max - pairMax;
+  return [
+    clampNumber(aPosition + offset, bounds.min, bounds.max, aPosition),
+    clampNumber(bPosition + offset, bounds.min, bounds.max, bPosition),
+  ];
+}
+
+function lineAxisBounds(config) {
+  const bounds = roiBounds(config.roi);
+  if (normalizeOrientation(config.lineOrientation) === "horizontal") {
+    return { min: bounds.top, max: bounds.bottom };
+  }
+  return { min: bounds.left, max: bounds.right };
 }
 
 function setView(view) {

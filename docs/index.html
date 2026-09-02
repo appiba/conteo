@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app-fast-count-20260902.js?v=789ad32"></script>
+  <script defer src="./app-fast-count-20260902.js?v=move-lines-20260902"></script>
 </head>
 <body>
   <main class="shell">
@@ -136,6 +136,7 @@
         <div class="calibration-tools">
           <button class="tool active" data-tool="lineA" type="button">Linea A</button>
           <button class="tool" data-tool="lineB" type="button">Linea B</button>
+          <button class="tool" data-tool="linePair" type="button">Mover A+B</button>
           <button class="tool" data-tool="roi" type="button">Zona</button>
         </div>
 
@@ -250,6 +251,10 @@
           <button id="expandRoi" type="button">
             <span class="icon">□</span>
             <span>Zona al borde</span>
+          </button>
+          <button id="centerLines" type="button">
+            <span class="icon">↔</span>
+            <span>Centrar A+B</span>
           </button>
           <button id="swapLines" type="button">
             <span class="icon">⇄</span>
