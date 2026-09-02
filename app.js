@@ -62,7 +62,7 @@ const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
-const REPORT_BUILD_VERSION = "history-report-20260902";
+const REPORT_BUILD_VERSION = "pdf-report-20260902";
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.04;
 const CAMERA_START_TIMEOUT_MS = 25000;
@@ -2878,9 +2878,9 @@ function trafficTrendDetail(summary) {
 function downloadDailyReport() {
   ensureCurrentDay();
   const summary = buildDailySummary(state.events, state.sessions);
-  const html = buildReportHtml(summary);
-  downloadBlob(html, "text/html;charset=utf-8", `reporte-afluencia-${todayKey}.html`);
-  setStatus("Reporte descargado");
+  const pdf = buildReportPdf(summary);
+  downloadBlob(pdf, "application/pdf", `reporte-afluencia-${todayKey}.pdf`);
+  setStatus("PDF descargado");
 }
 
 function downloadEventsCsv() {
@@ -2920,6 +2920,411 @@ function buildEventsCsv() {
       event.camera || CAMERA_NAME,
     ]);
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+function buildReportPdf(summary) {
+  const pdf = createPdfDocument();
+  const accuracy = accuracySnapshot();
+  const hourlyRows = historyRowsForDisplay(summary);
+  const events = [...state.events].sort((a, b) => a.timestampMs - b.timestampMs);
+  const recentItems = recentMinuteSeries(state.events).map((item) => ({ label: item.label, value: item.count }));
+  const ageItems = ageChartItems(state.events);
+  const dayItems = dailyComparisonData().slice(-14).map((item) => ({ label: formatDate(item.dateKey), value: item.count }));
+
+  pdf.addHeader("Reporte de historial", [
+    `Fecha: ${formatDate(todayKey)}`,
+    `Camara: ${CAMERA_NAME}`,
+    `Zona horaria: ${REPORT_TIMEZONE}`,
+    `Generado: ${formatDateTime(Date.now())}`,
+    `Version: ${REPORT_BUILD_VERSION}`,
+  ]);
+
+  pdf.addCards([
+    { label: "Ingresos hoy", value: summary.total_today, detail: "Entradas confirmadas por la logica A/B." },
+    {
+      label: "Hora pico",
+      value: summary.peak_hour && summary.peak_hour.count > 0 ? summary.peak_hour.hour : "--",
+      detail: summary.peak_hour && summary.peak_hour.count > 0 ? `${summary.peak_hour.count} ingresos.` : "Sin hora pico definida.",
+    },
+    { label: "Promedio por hora", value: `${summary.average_people_per_hour}/h`, detail: "Sobre horas con camara activa." },
+    { label: "Ultimos 30 min", value: summary.last_30_minutes, detail: "Movimiento reciente registrado." },
+    { label: "Grupo maximo", value: summary.max_group_size, detail: `Promedio de grupo ${summary.average_group_size}.` },
+    { label: "Precision", value: accuracy.value, detail: accuracy.detail },
+  ]);
+
+  pdf.addSection("Resultados logicos");
+  pdf.addInsightGrid(buildHistoryInsights(summary));
+
+  pdf.addSection("Graficos");
+  pdf.addBarChart("Ingresos por hora", hourlyRows.map((item) => ({ label: item.hour, value: item.count })), "ingresos");
+  pdf.addBarChart("Ultimos 30 minutos", recentItems, "ingresos");
+  pdf.addBarChart("Clasificacion detectada", ageItems, "personas");
+  pdf.addBarChart("Comparativo por dia", dayItems, "ingresos");
+
+  pdf.addTable(
+    "Resumen por hora",
+    ["Hora", "Ingresos", "Cobertura", "Est. hora", "Min. pico", "Pico/min", "Grupo prom."],
+    hourlyRows.map((row) => [
+      row.hour,
+      row.count,
+      `${row.coverage_percentage}%`,
+      row.estimated_full_hour_count === null ? "--" : row.estimated_full_hour_count,
+      row.peak_minute || "--",
+      row.peak_people_per_minute,
+      row.average_group_size,
+    ]),
+    [88, 58, 70, 70, 78, 62, 80],
+  );
+
+  pdf.addTable(
+    "Detalle de entradas",
+    ["#", "Fecha", "Hora", "Track", "Edad", "Grupo", "Tam.", "Total"],
+    events.map((event, index) => [
+      index + 1,
+      event.date || formatDate(event.dateKey || todayKey),
+      formatClock(event.timestampMs),
+      event.track_id ?? "",
+      event.age_group || "SIN_DETERMINAR",
+      event.group_id ?? "",
+      event.group_size ?? 1,
+      event.total_count ?? index + 1,
+    ]),
+    [34, 72, 58, 55, 138, 52, 45, 52],
+  );
+
+  pdf.addTable(
+    "Sesiones de camara",
+    ["Sesion", "Camara", "Inicio", "Fin"],
+    state.sessions.map((session) => [
+      session.id ?? "",
+      session.camera || CAMERA_NAME,
+      formatDateTime(session.startMs),
+      session.endMs ? formatDateTime(session.endMs) : "Activa",
+    ]),
+    [70, 120, 150, 150],
+  );
+
+  pdf.addNote("Lectura recomendada: usa el total diario como resultado principal. La proyeccion por hora es orientativa y depende de que la camara haya estado activa durante suficiente tiempo.");
+  return pdf.output();
+}
+
+function createPdfDocument() {
+  const pageWidth = 595.28;
+  const pageHeight = 841.89;
+  const margin = 36;
+  const contentWidth = pageWidth - margin * 2;
+  const colors = {
+    green: [0.027, 0.604, 0.271],
+    ink: [0.063, 0.125, 0.094],
+    muted: [0.373, 0.455, 0.416],
+    line: [0.851, 0.898, 0.867],
+    panel: [0.961, 0.984, 0.969],
+    softGreen: [0.933, 0.976, 0.949],
+    white: [1, 1, 1],
+  };
+  const pages = [];
+  let page = null;
+  let y = margin;
+
+  addPage();
+
+  function addPage() {
+    page = { ops: [] };
+    pages.push(page);
+    y = margin;
+    drawFooter();
+  }
+
+  function addHeader(title, details) {
+    ensureSpace(128);
+    drawText("AFLUENCIA COUNTER", margin, y, 9, { bold: true, color: colors.green });
+    y += 17;
+    drawText(title, margin, y, 25, { bold: true, color: colors.ink });
+    y += 24;
+    details.forEach((line) => {
+      drawText(line, margin, y, 9, { color: colors.muted });
+      y += 12;
+    });
+    y += 7;
+    drawLine(margin, y, pageWidth - margin, y, colors.green, 1.4);
+    y += 22;
+  }
+
+  function addSection(title) {
+    ensureSpace(34);
+    drawText(title, margin, y, 14, { bold: true, color: colors.ink });
+    y += 17;
+    drawLine(margin, y, pageWidth - margin, y, colors.line, 0.7);
+    y += 12;
+  }
+
+  function addCards(cards) {
+    const gap = 10;
+    const columns = 3;
+    const cardWidth = (contentWidth - gap * (columns - 1)) / columns;
+    const cardHeight = 76;
+    for (let index = 0; index < cards.length; index += columns) {
+      ensureSpace(cardHeight + 12);
+      cards.slice(index, index + columns).forEach((card, offset) => {
+        const x = margin + offset * (cardWidth + gap);
+        drawRect(x, y, cardWidth, cardHeight, colors.white, colors.line);
+        drawText(card.label, x + 10, y + 16, 8, { bold: true, color: colors.muted });
+        const value = String(card.value ?? "--");
+        const valueSize = value.length > 10 ? 15 : value.length > 6 ? 19 : 28;
+        drawText(value, x + 10, y + 43, valueSize, { bold: true, color: colors.green });
+        drawWrappedText(card.detail, x + 10, y + 60, cardWidth - 20, 7.5, { color: colors.muted, maxLines: 2 });
+      });
+      y += cardHeight + 12;
+    }
+  }
+
+  function addInsightGrid(items) {
+    const gap = 10;
+    const columns = 2;
+    const itemWidth = (contentWidth - gap) / columns;
+    const itemHeight = 76;
+    if (!items.length) {
+      ensureSpace(24);
+      drawText("Sin resultados todavia.", margin, y, 10, { color: colors.muted });
+      y += 20;
+      return;
+    }
+    for (let index = 0; index < items.length; index += columns) {
+      ensureSpace(itemHeight + 10);
+      items.slice(index, index + columns).forEach((item, offset) => {
+        const x = margin + offset * (itemWidth + gap);
+        drawRect(x, y, itemWidth, itemHeight, colors.panel, colors.line);
+        drawText(item.label, x + 10, y + 15, 8, { bold: true, color: colors.muted });
+        drawText(item.value, x + 10, y + 36, 15, { bold: true, color: colors.ink });
+        drawWrappedText(item.detail, x + 10, y + 53, itemWidth - 20, 7.5, { color: colors.muted, maxLines: 2 });
+      });
+      y += itemHeight + 10;
+    }
+  }
+
+  function addBarChart(title, items, unit) {
+    const visible = items
+      .filter((item) => Number.isFinite(Number(item.value)))
+      .map((item) => ({ label: item.label, value: Number(item.value || 0) }));
+    const hasData = visible.some((item) => item.value > 0);
+    ensureSpace(44);
+    drawText(title, margin, y, 12, { bold: true, color: colors.ink });
+    y += 17;
+
+    if (!visible.length || !hasData) {
+      drawRect(margin, y, contentWidth, 28, colors.panel, colors.line);
+      drawText("Sin datos para graficar todavia.", margin + 10, y + 18, 9, { color: colors.muted });
+      y += 40;
+      return;
+    }
+
+    const maxValue = Math.max(1, ...visible.map((item) => item.value));
+    const labelWidth = 112;
+    const valueWidth = 46;
+    const barWidth = contentWidth - labelWidth - valueWidth - 12;
+    const rowHeight = 18;
+
+    visible.forEach((item) => {
+      ensureSpace(rowHeight + 8);
+      const barX = margin + labelWidth;
+      const barY = y + 3;
+      const fillWidth = item.value > 0 ? Math.max(4, (item.value / maxValue) * barWidth) : 0;
+      drawText(fitPdfText(item.label, labelWidth - 8, 8), margin, y + 12, 8, { color: colors.ink });
+      drawRect(barX, barY, barWidth, 8, colors.panel, colors.line);
+      if (fillWidth > 0) {
+        drawRect(barX, barY, fillWidth, 8, colors.green, null);
+      }
+      drawText(`${item.value} ${unit}`, barX + barWidth + 8, y + 12, 8, { bold: true, color: colors.green });
+      y += rowHeight;
+    });
+    y += 12;
+  }
+
+  function addTable(title, headers, rows, widths) {
+    addSection(title);
+    const tableRows = rows.length ? rows : [["Sin datos registrados."]];
+    const rowHeight = 20;
+    const headerHeight = 22;
+
+    const drawHeaderRow = () => {
+      ensureSpace(headerHeight + rowHeight);
+      drawRect(margin, y, contentWidth, headerHeight, colors.softGreen, colors.line);
+      let x = margin;
+      headers.forEach((header, index) => {
+        drawText(fitPdfText(header, widths[index] - 6, 7.2), x + 4, y + 14, 7.2, { bold: true, color: colors.ink });
+        x += widths[index];
+      });
+      y += headerHeight;
+    };
+
+    drawHeaderRow();
+    tableRows.forEach((row, rowIndex) => {
+      if (y + rowHeight > pageHeight - margin - 18) {
+        addPage();
+        drawText(`${title} cont.`, margin, y, 11, { bold: true, color: colors.ink });
+        y += 17;
+        drawHeaderRow();
+      }
+      const background = rowIndex % 2 === 0 ? colors.white : colors.panel;
+      drawRect(margin, y, contentWidth, rowHeight, background, colors.line);
+      let x = margin;
+      headers.forEach((_header, index) => {
+        const cell = row[index] ?? "";
+        drawText(fitPdfText(cell, widths[index] - 6, 7.4), x + 4, y + 13, 7.4, { color: colors.ink });
+        x += widths[index];
+      });
+      y += rowHeight;
+    });
+    y += 14;
+  }
+
+  function addNote(value) {
+    ensureSpace(58);
+    drawRect(margin, y, contentWidth, 44, colors.softGreen, colors.green);
+    drawWrappedText(value, margin + 12, y + 16, contentWidth - 24, 9, { color: colors.ink, maxLines: 3 });
+    y += 58;
+  }
+
+  function ensureSpace(required) {
+    if (y + required <= pageHeight - margin - 18) return;
+    addPage();
+  }
+
+  function drawFooter() {
+    const footerY = pageHeight - 21;
+    drawLine(margin, footerY - 10, pageWidth - margin, footerY - 10, colors.line, 0.5);
+    drawText(`Afluencia Counter - Pagina ${pages.length}`, margin, footerY, 8, { color: colors.muted });
+  }
+
+  function drawWrappedText(value, x, top, maxWidth, size, options = {}) {
+    const lines = wrapPdfText(value, maxWidth, size).slice(0, options.maxLines || 99);
+    const lineHeight = options.lineHeight || size * 1.25;
+    lines.forEach((line, index) => {
+      drawText(line, x, top + index * lineHeight, size, options);
+    });
+    return top + lines.length * lineHeight;
+  }
+
+  function drawText(value, x, top, size, options = {}) {
+    const font = options.bold ? "/F2" : "/F1";
+    const color = pdfRgb(options.color || colors.ink);
+    page.ops.push(`BT ${color} rg ${font} ${pdfNum(size)} Tf 1 0 0 1 ${pdfNum(x)} ${pdfNum(pageHeight - top)} Tm (${escapePdfText(value)}) Tj ET`);
+  }
+
+  function drawRect(x, top, width, height, fillColor, strokeColor) {
+    const left = pdfNum(x);
+    const bottom = pdfNum(pageHeight - top - height);
+    const rect = `${left} ${bottom} ${pdfNum(width)} ${pdfNum(height)} re`;
+    if (fillColor && strokeColor) {
+      page.ops.push(`${pdfRgb(fillColor)} rg ${pdfRgb(strokeColor)} RG 0.6 w ${rect} B`);
+    } else if (fillColor) {
+      page.ops.push(`${pdfRgb(fillColor)} rg ${rect} f`);
+    } else if (strokeColor) {
+      page.ops.push(`${pdfRgb(strokeColor)} RG 0.6 w ${rect} S`);
+    }
+  }
+
+  function drawLine(x1, top1, x2, top2, color, width) {
+    page.ops.push(`${pdfRgb(color)} RG ${pdfNum(width)} w ${pdfNum(x1)} ${pdfNum(pageHeight - top1)} m ${pdfNum(x2)} ${pdfNum(pageHeight - top2)} l S`);
+  }
+
+  function output() {
+    const pageIds = pages.map((_item, index) => 3 + index * 2);
+    const fontNormalId = 3 + pages.length * 2;
+    const fontBoldId = fontNormalId + 1;
+    const objects = [];
+    objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`;
+
+    pages.forEach((item, index) => {
+      const pageId = pageIds[index];
+      const contentId = pageId + 1;
+      const content = item.ops.join("\n");
+      objects[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfNum(pageWidth)} ${pdfNum(pageHeight)}] /Resources << /Font << /F1 ${fontNormalId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`;
+      objects[contentId] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+    });
+
+    objects[fontNormalId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    objects[fontBoldId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>";
+
+    let pdf = "%PDF-1.4\n";
+    const offsets = [0];
+    for (let index = 1; index < objects.length; index += 1) {
+      offsets[index] = pdf.length;
+      pdf += `${index} 0 obj\n${objects[index]}\nendobj\n`;
+    }
+    const xrefOffset = pdf.length;
+    pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+    for (let index = 1; index < objects.length; index += 1) {
+      pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+    }
+    pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+    return pdf;
+  }
+
+  return { addHeader, addSection, addCards, addInsightGrid, addBarChart, addTable, addNote, output };
+}
+
+function wrapPdfText(value, maxWidth, size) {
+  const text = normalizePdfText(value);
+  const maxChars = Math.max(8, Math.floor(maxWidth / Math.max(1, size * 0.52)));
+  const lines = [];
+  text.split(/\s+/).filter(Boolean).forEach((word) => {
+    let current = lines.pop() || "";
+    if (!current) {
+      while (word.length > maxChars) {
+        lines.push(word.slice(0, maxChars));
+        word = word.slice(maxChars);
+      }
+      lines.push(word);
+      return;
+    }
+    const next = `${current} ${word}`;
+    if (next.length <= maxChars) {
+      lines.push(next);
+    } else {
+      lines.push(current);
+      while (word.length > maxChars) {
+        lines.push(word.slice(0, maxChars));
+        word = word.slice(maxChars);
+      }
+      lines.push(word);
+    }
+  });
+  return lines.length ? lines : [""];
+}
+
+function fitPdfText(value, maxWidth, size) {
+  const text = normalizePdfText(value);
+  const maxChars = Math.max(4, Math.floor(maxWidth / Math.max(1, size * 0.52)));
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 3))}...`;
+}
+
+function normalizePdfText(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replaceAll("→", "->")
+    .replaceAll("←", "<-")
+    .replaceAll("·", "-")
+    .replace(/[^\x20-\x7E]/g, "");
+}
+
+function escapePdfText(value) {
+  return normalizePdfText(value)
+    .replaceAll("\\", "\\\\")
+    .replaceAll("(", "\\(")
+    .replaceAll(")", "\\)");
+}
+
+function pdfRgb(color) {
+  return color.map((value) => pdfNum(value)).join(" ");
+}
+
+function pdfNum(value) {
+  const number = Number(value || 0);
+  return Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function buildReportHtml(summary) {
