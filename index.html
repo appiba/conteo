@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app-fast-count-20260902.js?v=frontal-flow-20260902"></script>
+  <script defer src="./app-fast-count-20260902.js?v=history-report-20260902"></script>
 </head>
 <body>
   <main class="shell">
@@ -274,6 +274,47 @@
           <small id="historyDate">--</small>
           <small id="peakHourLabel">Hora pico: --</small>
           <small id="averageHourLabel">Promedio: 0/hora</small>
+        </section>
+        <div class="report-actions">
+          <button class="primary" id="downloadReport" type="button">
+            <span class="icon">↓</span>
+            <span>Descargar reporte</span>
+          </button>
+          <button id="downloadCsv" type="button">
+            <span class="icon">≡</span>
+            <span>Descargar CSV</span>
+          </button>
+        </div>
+        <section class="history-insights" id="historyInsights" aria-label="Resultados del dia"></section>
+        <section class="history-charts" aria-label="Graficos del historial">
+          <article class="chart-card">
+            <div class="chart-title">
+              <span>Ingresos por hora</span>
+              <small>Dia actual</small>
+            </div>
+            <div class="bar-chart" id="hourlyChart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-title">
+              <span>Flujo reciente</span>
+              <small>Ultimos 30 min</small>
+            </div>
+            <div class="bar-chart compact" id="recentChart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-title">
+              <span>Clasificacion</span>
+              <small>Por edad detectada</small>
+            </div>
+            <div class="bar-chart compact" id="ageChart"></div>
+          </article>
+          <article class="chart-card">
+            <div class="chart-title">
+              <span>Comparativo</span>
+              <small>Dias guardados</small>
+            </div>
+            <div class="bar-chart compact" id="dailyChart"></div>
+          </article>
         </section>
         <section class="history-list" id="historyList" aria-label="Historial de conteo"></section>
         <div class="actions">

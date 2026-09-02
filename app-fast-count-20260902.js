@@ -62,12 +62,21 @@ const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
+const REPORT_BUILD_VERSION = "history-report-20260902";
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.04;
 const CAMERA_START_TIMEOUT_MS = 25000;
 const ROI_EDGE_TOLERANCE = 0.10;
 const LINE_EDGE_TOLERANCE = 0.12;
 const LEGACY_INSET_ROI = [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }];
+const AGE_REPORT_LABELS = {
+  children: "Ninos",
+  adolescents: "Adolescentes",
+  youth: "Jovenes",
+  adults: "Adultos",
+  older_adults: "Adultos mayores",
+  undetermined: "Sin clasificar",
+};
 
 const state = {
   stream: null,
@@ -142,6 +151,13 @@ const els = {
   historyTotal: document.querySelector("#historyTotal"),
   historyDate: document.querySelector("#historyDate"),
   historyList: document.querySelector("#historyList"),
+  downloadReport: document.querySelector("#downloadReport"),
+  downloadCsv: document.querySelector("#downloadCsv"),
+  historyInsights: document.querySelector("#historyInsights"),
+  hourlyChart: document.querySelector("#hourlyChart"),
+  recentChart: document.querySelector("#recentChart"),
+  ageChart: document.querySelector("#ageChart"),
+  dailyChart: document.querySelector("#dailyChart"),
   toggleCamera: document.querySelector("#toggleCamera"),
   resetCount: document.querySelector("#resetCount"),
   clearDay: document.querySelector("#clearDay"),
@@ -227,6 +243,14 @@ function wireUi() {
     renderAll();
     setStatus("Dia borrado");
   });
+
+  if (els.downloadReport) {
+    els.downloadReport.addEventListener("click", downloadDailyReport);
+  }
+
+  if (els.downloadCsv) {
+    els.downloadCsv.addEventListener("click", downloadEventsCsv);
+  }
 
   els.realCount.addEventListener("input", () => {
     state.realCount = Math.max(0, Number(els.realCount.value || 0));
@@ -2652,6 +2676,490 @@ function renderHistory(summary = buildDailySummary(state.events, state.sessions)
       return `<div class="history-row"><span>${item.hour}<br><small>Cobertura ${item.coverage_percentage}%${variation}${estimate}</small></span><strong>${item.count}</strong></div>`;
     }).join("")
     : '<div class="history-row"><span>Sin entradas todavia<br><small>La camara aun no registra ingresos.</small></span><strong>0</strong></div>';
+  renderHistoryInsights(summary);
+  renderHistoryCharts(summary);
+}
+
+function renderHistoryInsights(summary) {
+  if (!els.historyInsights) return;
+  const insights = buildHistoryInsights(summary);
+  els.historyInsights.innerHTML = insights.map((item) => `
+    <article>
+      <span>${escapeHtml(item.label)}</span>
+      <strong>${escapeHtml(item.value)}</strong>
+      <small>${escapeHtml(item.detail)}</small>
+    </article>
+  `).join("");
+}
+
+function renderHistoryCharts(summary) {
+  const hourlyItems = historyRowsForDisplay(summary).map((row) => ({
+    label: row.hour,
+    value: row.count,
+    detail: `Cobertura ${row.coverage_percentage}%`,
+  }));
+  const recentItems = recentMinuteSeries(state.events).map((row) => ({
+    label: row.label,
+    value: row.count,
+    detail: "cada 5 min",
+  }));
+  const ageItems = ageChartItems(state.events);
+  const dayItems = dailyComparisonData().slice(-7).map((day) => ({
+    label: formatDate(day.dateKey),
+    value: day.count,
+    detail: day.realCount > 0 ? `Real ${day.realCount}` : "Guardado",
+  }));
+
+  renderBarChart(els.hourlyChart, hourlyItems, "ingresos");
+  renderBarChart(els.recentChart, recentItems, "ing.");
+  renderBarChart(els.ageChart, ageItems, "pers.");
+  renderBarChart(els.dailyChart, dayItems, "ing.");
+}
+
+function buildHistoryInsights(summary) {
+  const accuracy = accuracySnapshot();
+  const peak = summary.peak_hour && summary.peak_hour.count > 0
+    ? { value: summary.peak_hour.hour, detail: `${summary.peak_hour.count} ingresos en la hora con mayor movimiento.` }
+    : { value: "--", detail: "Aun no hay suficientes ingresos para definir hora pico." };
+
+  return [
+    {
+      label: "Resultado del dia",
+      value: String(summary.total_today),
+      detail: "Entradas confirmadas por cruce valido.",
+    },
+    {
+      label: "Hora pico",
+      value: peak.value,
+      detail: peak.detail,
+    },
+    {
+      label: "Ritmo actual",
+      value: `${summary.live_rate_per_minute}/min`,
+      detail: `Proyeccion ${summary.projected_people_per_hour}/hora con la lectura reciente.`,
+    },
+    {
+      label: "Grupos",
+      value: String(summary.groups_count),
+      detail: `Maximo ${summary.max_group_size}; promedio ${summary.average_group_size}.`,
+    },
+    {
+      label: "Precision",
+      value: accuracy.value,
+      detail: accuracy.detail,
+    },
+    {
+      label: "Lectura logica",
+      value: trafficTrendLabel(summary),
+      detail: trafficTrendDetail(summary),
+    },
+  ];
+}
+
+function renderBarChart(container, items, unit) {
+  if (!container) return;
+  const visibleItems = items.filter((item) => Number.isFinite(Number(item.value)));
+  const maxValue = Math.max(1, ...visibleItems.map((item) => Number(item.value || 0)));
+  const hasData = visibleItems.some((item) => Number(item.value) > 0);
+
+  if (!visibleItems.length || !hasData) {
+    container.innerHTML = '<div class="chart-empty">Sin datos para graficar todavia.</div>';
+    return;
+  }
+
+  container.innerHTML = visibleItems.map((item) => {
+    const value = Number(item.value || 0);
+    const width = value > 0 ? Math.max(5, round((value / maxValue) * 100, 1)) : 0;
+    return `
+      <div class="bar-row">
+        <span class="bar-label">${escapeHtml(item.label)}</span>
+        <div class="bar-meter" aria-label="${escapeHtml(item.label)} ${value} ${escapeHtml(unit)}">
+          <span style="width: ${width}%"></span>
+        </div>
+        <strong>${value}</strong>
+        <small>${escapeHtml(item.detail || unit)}</small>
+      </div>
+    `;
+  }).join("");
+}
+
+function historyRowsForDisplay(summary) {
+  const rows = summary.hourly_summary.filter((item) => item.count > 0 || item.coverage_seconds > 0);
+  if (rows.length) return rows;
+  return summary.hourly_summary.slice(-1);
+}
+
+function ageChartItems(events) {
+  const counts = ageCounts(events);
+  return Object.entries(AGE_REPORT_LABELS).map(([key, label]) => ({
+    label,
+    value: counts[key] || 0,
+    detail: "detectado",
+  }));
+}
+
+function dailyComparisonData() {
+  const days = new Map();
+  Object.entries(state.days || {}).forEach(([dateKey, day]) => {
+    const dayEvents = Array.isArray(day.events) ? day.events : [];
+    days.set(dateKey, {
+      dateKey,
+      count: dayEvents.length || Number(day.count || 0),
+      realCount: Number(day.realCount || 0),
+    });
+  });
+  days.set(todayKey, {
+    dateKey: todayKey,
+    count: state.events.length,
+    realCount: state.realCount,
+  });
+  return Array.from(days.values()).sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+}
+
+function recentMinuteSeries(events, now = new Date(), windowMinutes = 30, bucketMinutes = 5) {
+  const endMs = bucketInfo(now, bucketMinutes).endMs;
+  const startMs = endMs - windowMinutes * 60000;
+  const rows = [];
+  for (let cursor = startMs; cursor < endMs; cursor += bucketMinutes * 60000) {
+    const next = cursor + bucketMinutes * 60000;
+    const count = events.filter((event) => event.timestampMs >= cursor && event.timestampMs < next).length;
+    const labelParts = guayaquilParts(new Date(cursor));
+    rows.push({
+      startMs: cursor,
+      endMs: next,
+      label: `${pad2(labelParts.hour)}:${pad2(labelParts.minute)}`,
+      count,
+    });
+  }
+  return rows;
+}
+
+function accuracySnapshot() {
+  if (state.realCount <= 0) {
+    return {
+      value: "--",
+      detail: "Ingresa el conteo real para comparar la precision.",
+      percentage: null,
+      difference: null,
+    };
+  }
+  const difference = state.count - state.realCount;
+  const percentage = round((state.count / state.realCount) * 100, 1);
+  const sign = difference > 0 ? "+" : "";
+  return {
+    value: `${percentage}%`,
+    detail: `Diferencia ${sign}${difference} frente al conteo real.`,
+    percentage,
+    difference,
+  };
+}
+
+function trafficTrendLabel(summary) {
+  if (!summary.total_today) return "Sin flujo";
+  if (summary.last_15_minutes > 0) return "Activo";
+  if (summary.last_30_minutes > 0) return "Bajo";
+  return "Sin movimiento";
+}
+
+function trafficTrendDetail(summary) {
+  const rows = historyRowsForDisplay(summary).filter((row) => row.coverage_seconds > 0 || row.count > 0);
+  const current = rows[rows.length - 1];
+  const previous = rows[rows.length - 2];
+  if (!summary.total_today) return "El reporte queda listo cuando existan entradas.";
+  if (!current || !previous || previous.count === 0) {
+    return `Ultimos 15 min: ${summary.last_15_minutes}; ultimos 30 min: ${summary.last_30_minutes}.`;
+  }
+  const diff = current.count - previous.count;
+  if (diff > 0) return `Subio ${diff} ingreso(s) frente a la hora anterior.`;
+  if (diff < 0) return `Bajo ${Math.abs(diff)} ingreso(s) frente a la hora anterior.`;
+  return "Se mantiene igual que la hora anterior.";
+}
+
+function downloadDailyReport() {
+  ensureCurrentDay();
+  const summary = buildDailySummary(state.events, state.sessions);
+  const html = buildReportHtml(summary);
+  downloadBlob(html, "text/html;charset=utf-8", `reporte-afluencia-${todayKey}.html`);
+  setStatus("Reporte descargado");
+}
+
+function downloadEventsCsv() {
+  ensureCurrentDay();
+  const csv = buildEventsCsv();
+  downloadBlob(`\ufeff${csv}`, "text/csv;charset=utf-8", `historial-afluencia-${todayKey}.csv`);
+  setStatus("CSV descargado");
+}
+
+function buildEventsCsv() {
+  const headers = [
+    "fecha",
+    "hora",
+    "evento",
+    "track_id",
+    "grupo_edad",
+    "confianza_edad",
+    "total_acumulado",
+    "segundos_desde_anterior",
+    "grupo_id",
+    "tamano_grupo",
+    "camara",
+  ];
+  const rows = [...state.events]
+    .sort((a, b) => a.timestampMs - b.timestampMs)
+    .map((event) => [
+      event.date || formatDate(event.dateKey || todayKey),
+      formatClock(event.timestampMs),
+      event.event || "ENTRY",
+      event.track_id ?? "",
+      event.age_group || "SIN_DETERMINAR",
+      event.age_confidence ?? "",
+      event.total_count ?? "",
+      event.seconds_since_previous_entry ?? "",
+      event.group_id ?? "",
+      event.group_size ?? "",
+      event.camera || CAMERA_NAME,
+    ]);
+  return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+function buildReportHtml(summary) {
+  const generatedAt = formatDateTime(Date.now());
+  const rows = historyRowsForDisplay(summary);
+  const events = [...state.events].sort((a, b) => a.timestampMs - b.timestampMs);
+  const recentItems = recentMinuteSeries(state.events).map((item) => ({ label: item.label, value: item.count }));
+  const ageItems = ageChartItems(state.events);
+  const dayItems = dailyComparisonData().slice(-14).map((item) => ({ label: formatDate(item.dateKey), value: item.count }));
+  const insights = buildHistoryInsights(summary);
+
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reporte de afluencia ${escapeHtml(formatDate(todayKey))}</title>
+  <style>
+    :root { color-scheme: light; --green: #079a45; --ink: #102018; --muted: #5f746a; --line: #d9e5dd; --panel: #f5fbf7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f7faf8; color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
+    main { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 36px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; border-bottom: 2px solid var(--green); padding-bottom: 18px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin: 26px 0 12px; font-size: 18px; }
+    p { margin: 4px 0; color: var(--muted); }
+    .tag { color: var(--green); font-weight: 700; text-transform: uppercase; font-size: 12px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+    .card, .chart, .insight { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .card span, .insight span { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; font-weight: 700; }
+    .card strong { display: block; margin-top: 6px; color: var(--green); font-size: 30px; line-height: 1; }
+    .card small, .insight small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.35; }
+    .insights { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .insight strong { display: block; margin-top: 5px; font-size: 20px; }
+    .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .chart svg { width: 100%; height: auto; display: block; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; }
+    th { background: var(--panel); color: #2c4938; text-transform: uppercase; font-size: 11px; }
+    tr:last-child td { border-bottom: 0; }
+    .note { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--green); background: #eef9f2; color: #31513d; }
+    @media print { main { width: 100%; padding: 0; } .card, .chart, .insight, table { break-inside: avoid; } }
+    @media (max-width: 760px) { .cards, .charts, .insights { grid-template-columns: 1fr; } header { display: block; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <span class="tag">Afluencia Counter</span>
+        <h1>Reporte de historial</h1>
+        <p>Fecha: ${escapeHtml(formatDate(todayKey))}</p>
+        <p>Camara: ${escapeHtml(CAMERA_NAME)} · Zona horaria: ${escapeHtml(REPORT_TIMEZONE)}</p>
+      </div>
+      <div>
+        <p>Generado: ${escapeHtml(generatedAt)}</p>
+        <p>Version: ${escapeHtml(REPORT_BUILD_VERSION)}</p>
+      </div>
+    </header>
+
+    <section class="cards">
+      ${reportCard("Ingresos hoy", summary.total_today, "Entradas confirmadas por la logica A/B.")}
+      ${reportCard("Hora pico", summary.peak_hour && summary.peak_hour.count > 0 ? summary.peak_hour.hour : "--", summary.peak_hour && summary.peak_hour.count > 0 ? `${summary.peak_hour.count} ingresos.` : "Sin hora pico definida.")}
+      ${reportCard("Promedio por hora", `${summary.average_people_per_hour}/h`, "Calculado sobre horas con camara activa.")}
+      ${reportCard("Ultimos 30 min", summary.last_30_minutes, "Movimiento reciente registrado.")}
+      ${reportCard("Grupo maximo", summary.max_group_size, `Promedio de grupo ${summary.average_group_size}.`)}
+      ${reportCard("Precision", accuracySnapshot().value, accuracySnapshot().detail)}
+    </section>
+
+    <h2>Resultados logicos</h2>
+    <section class="insights">
+      ${insights.map((item) => `
+        <article class="insight">
+          <span>${escapeHtml(item.label)}</span>
+          <strong>${escapeHtml(item.value)}</strong>
+          <small>${escapeHtml(item.detail)}</small>
+        </article>
+      `).join("")}
+    </section>
+
+    <h2>Graficos</h2>
+    <section class="charts">
+      <article class="chart">
+        <h2>Ingresos por hora</h2>
+        ${buildReportBarSvg(rows.map((item) => ({ label: item.hour, value: item.count })), "ingresos")}
+      </article>
+      <article class="chart">
+        <h2>Ultimos 30 minutos</h2>
+        ${buildReportBarSvg(recentItems, "ingresos")}
+      </article>
+      <article class="chart">
+        <h2>Clasificacion detectada</h2>
+        ${buildReportBarSvg(ageItems, "personas")}
+      </article>
+      <article class="chart">
+        <h2>Comparativo por dia</h2>
+        ${buildReportBarSvg(dayItems, "ingresos")}
+      </article>
+    </section>
+
+    <h2>Resumen por hora</h2>
+    ${buildHourlyTable(rows)}
+
+    <h2>Detalle de entradas</h2>
+    ${buildEventsTable(events)}
+
+    <h2>Sesiones de camara</h2>
+    ${buildSessionsTable(state.sessions)}
+
+    <p class="note">Lectura recomendada: usa el total diario como resultado principal. La proyeccion por hora es orientativa y depende de que la camara haya estado activa durante suficiente tiempo.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function reportCard(label, value, detail) {
+  return `<article class="card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></article>`;
+}
+
+function buildReportBarSvg(items, unit) {
+  const visible = items.filter((item) => Number.isFinite(Number(item.value)));
+  const hasData = visible.some((item) => Number(item.value) > 0);
+  if (!visible.length || !hasData) {
+    return '<p>Sin datos para graficar todavia.</p>';
+  }
+  const width = 720;
+  const height = 260;
+  const padding = { left: 46, right: 18, top: 18, bottom: 54 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...visible.map((item) => Number(item.value || 0)));
+  const barGap = Math.max(6, 16 - visible.length);
+  const barWidth = Math.max(12, (plotWidth - barGap * (visible.length - 1)) / visible.length);
+  const bars = visible.map((item, index) => {
+    const value = Number(item.value || 0);
+    const barHeight = (value / maxValue) * plotHeight;
+    const x = padding.left + index * (barWidth + barGap);
+    const y = padding.top + plotHeight - barHeight;
+    const label = String(item.label || "");
+    return `
+      <rect x="${round(x, 2)}" y="${round(y, 2)}" width="${round(barWidth, 2)}" height="${round(barHeight, 2)}" rx="4" fill="#079a45"></rect>
+      <text x="${round(x + barWidth / 2, 2)}" y="${round(y - 6, 2)}" text-anchor="middle" font-size="12" font-weight="700" fill="#102018">${value}</text>
+      <text x="${round(x + barWidth / 2, 2)}" y="${height - 28}" text-anchor="middle" font-size="10" fill="#5f746a" transform="rotate(-35 ${round(x + barWidth / 2, 2)} ${height - 28})">${escapeHtml(label)}</text>
+    `;
+  }).join("");
+
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Grafico de ${escapeHtml(unit)}">
+    <rect x="0" y="0" width="${width}" height="${height}" rx="8" fill="#f5fbf7"></rect>
+    <line x1="${padding.left}" y1="${padding.top + plotHeight}" x2="${width - padding.right}" y2="${padding.top + plotHeight}" stroke="#b8c9bf"></line>
+    <text x="${padding.left}" y="14" font-size="11" fill="#5f746a">Max ${maxValue} ${escapeHtml(unit)}</text>
+    ${bars}
+  </svg>`;
+}
+
+function buildHourlyTable(rows) {
+  const body = rows.length
+    ? rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.hour)}</td>
+        <td>${row.count}</td>
+        <td>${row.coverage_percentage}%</td>
+        <td>${row.estimated_full_hour_count === null ? "--" : row.estimated_full_hour_count}</td>
+        <td>${row.peak_minute || "--"}</td>
+        <td>${row.peak_people_per_minute}</td>
+        <td>${row.average_group_size}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="7">Sin entradas todavia.</td></tr>';
+  return `<table>
+    <thead><tr><th>Hora</th><th>Ingresos</th><th>Cobertura</th><th>Est. hora</th><th>Min. pico</th><th>Pico/min</th><th>Grupo prom.</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+function buildEventsTable(events) {
+  const body = events.length
+    ? events.map((event, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeHtml(event.date || formatDate(event.dateKey || todayKey))}</td>
+        <td>${escapeHtml(formatClock(event.timestampMs))}</td>
+        <td>${escapeHtml(event.track_id ?? "")}</td>
+        <td>${escapeHtml(event.age_group || "SIN_DETERMINAR")}</td>
+        <td>${escapeHtml(event.group_id ?? "")}</td>
+        <td>${escapeHtml(event.group_size ?? 1)}</td>
+        <td>${escapeHtml(event.total_count ?? index + 1)}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="8">Sin entradas todavia.</td></tr>';
+  return `<table>
+    <thead><tr><th>#</th><th>Fecha</th><th>Hora</th><th>Track ID</th><th>Edad</th><th>Grupo ID</th><th>Tam. grupo</th><th>Total</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+function buildSessionsTable(sessions) {
+  const body = sessions.length
+    ? sessions.map((session) => `
+      <tr>
+        <td>${escapeHtml(session.id ?? "")}</td>
+        <td>${escapeHtml(session.camera || CAMERA_NAME)}</td>
+        <td>${escapeHtml(formatDateTime(session.startMs))}</td>
+        <td>${escapeHtml(session.endMs ? formatDateTime(session.endMs) : "Activa")}</td>
+      </tr>
+    `).join("")
+    : '<tr><td colspan="4">Sin sesiones guardadas.</td></tr>';
+  return `<table>
+    <thead><tr><th>Sesion</th><th>Camara</th><th>Inicio</th><th>Fin</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+function downloadBlob(content, type, filename) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
+function formatClock(ms) {
+  if (!Number.isFinite(Number(ms))) return "--";
+  const parts = guayaquilParts(new Date(ms));
+  return `${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
+}
+
+function formatDateTime(ms) {
+  if (!Number.isFinite(Number(ms))) return "--";
+  const parts = guayaquilParts(new Date(ms));
+  return `${pad2(parts.day)}/${pad2(parts.month)}/${parts.year} ${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
 }
 
 function loadState() {
