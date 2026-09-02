@@ -8,6 +8,7 @@ from src.geometry import (
     direction_positions_valid,
     line_from_position,
     movement_crossed_line,
+    normalize_entry_direction,
     normalized_line_position,
 )
 
@@ -40,6 +41,9 @@ class GeometryTest(unittest.TestCase):
         self.assertAlmostEqual(a, 0.32, places=2)
         self.assertAlmostEqual(b, 0.46, places=2)
         self.assertTrue(direction_positions_valid(a, b, "horizontal", "TOP_TO_BOTTOM"))
+
+    def test_horizontal_default_direction_is_front_camera_entry(self):
+        self.assertEqual(normalize_entry_direction(None, "horizontal"), "TOP_TO_BOTTOM")
 
     def test_horizontal_crossing_uses_y_axis(self):
         line = ((0.0, 100.0), (300.0, 100.0))

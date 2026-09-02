@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app-fast-count-20260902.js?v=move-lines-20260902"></script>
+  <script defer src="./app-fast-count-20260902.js?v=frontal-flow-20260902"></script>
 </head>
 <body>
   <main class="shell">
@@ -142,19 +142,19 @@
 
         <section class="calibration-panel" aria-label="Opciones de calibracion">
           <div class="calibration-group">
-            <span>Orientacion</span>
+            <span>Tipo de camara</span>
             <div class="segmented">
-              <button class="active" data-orientation="vertical" type="button">Vertical</button>
-              <button data-orientation="horizontal" type="button">Horizontal</button>
+              <button class="active" data-orientation="vertical" type="button">Lateral</button>
+              <button data-orientation="horizontal" type="button">Frontal</button>
             </div>
           </div>
           <div class="calibration-group">
-            <span>Direccion</span>
+            <span>Sentido de ingreso</span>
             <div class="segmented direction-grid">
               <button class="active" data-direction="LEFT_TO_RIGHT" type="button">Izq → Der</button>
               <button data-direction="RIGHT_TO_LEFT" type="button">Der → Izq</button>
-              <button data-direction="TOP_TO_BOTTOM" type="button">Arriba → Abajo</button>
-              <button data-direction="BOTTOM_TO_TOP" type="button">Abajo → Arriba</button>
+              <button data-direction="TOP_TO_BOTTOM" type="button">Lejos → Cerca</button>
+              <button data-direction="BOTTOM_TO_TOP" type="button">Cerca → Lejos</button>
             </div>
           </div>
           <div class="calibration-status" id="calibrationStatus">Ajusta A, B o Zona y guarda.</div>
@@ -297,7 +297,7 @@
           <li><span>1</span>Presiona INICIAR.</li>
           <li><span>2</span>Permite la camara.</li>
           <li><span>3</span>Calibra zona, A y B.</li>
-          <li><span>4</span>Cruza A → B para contar.</li>
+          <li><span>4</span>Entrada frontal: A lejos → B cerca.</li>
         </ol>
       </section>
 

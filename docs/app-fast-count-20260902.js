@@ -2017,7 +2017,11 @@ function setCalibrationOrientation(orientation) {
   const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
   setLinePositions(next, aPosition, bPosition);
   state.calibrationDraft = next;
-  setCalibrationStatus("Orientacion lista. Presiona Guardar.", "warning");
+  state.activeTool = "linePair";
+  const message = next.lineOrientation === "horizontal"
+    ? "Frontal listo: A arriba/lejos y B abajo/cerca. Presiona Guardar."
+    : "Lateral listo: A y B van de lado a lado. Presiona Guardar.";
+  setCalibrationStatus(message, "warning");
   renderAll();
 }
 
@@ -2027,7 +2031,10 @@ function setCalibrationDirection(direction) {
   const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
   setLinePositions(next, aPosition, bPosition);
   state.calibrationDraft = next;
-  setCalibrationStatus("Direccion lista. Presiona Guardar.", "warning");
+  const message = next.lineOrientation === "horizontal"
+    ? "Ingreso frontal ajustado. Presiona Guardar."
+    : "Direccion lista. Presiona Guardar.";
+  setCalibrationStatus(message, "warning");
   renderAll();
 }
 
@@ -2316,19 +2323,41 @@ function drawLine(ctx, line, canvas, color, label) {
 function drawCalibrationGuides(ctx, canvas, config) {
   const a = lineCenterPx(config.lineA, canvas);
   const b = lineCenterPx(config.lineB, canvas);
+  const isFrontal = normalizeOrientation(config.lineOrientation) === "horizontal";
   ctx.save();
   ctx.strokeStyle = "rgba(108, 231, 255, 0.9)";
   ctx.fillStyle = "rgba(108, 231, 255, 0.95)";
   ctx.lineWidth = 3;
   ctx.setLineDash([]);
   drawArrow(ctx, a, b);
+  if (isFrontal) {
+    drawFrontalFlowGuides(ctx, canvas, config);
+  }
   ctx.font = "bold 14px system-ui";
-  ctx.fillText("ORIGEN", clampPx(a.x - 34, canvas.width - 70), clampPx(a.y - 18, canvas.height - 18));
-  ctx.fillText("DESTINO", clampPx(b.x - 38, canvas.width - 76), clampPx(b.y + 28, canvas.height - 14));
+  ctx.fillText(isFrontal ? "A LEJOS" : "ORIGEN", clampPx(a.x - 34, canvas.width - 70), clampPx(a.y - 18, canvas.height - 18));
+  ctx.fillText(isFrontal ? "B CERCA" : "DESTINO", clampPx(b.x - 38, canvas.width - 76), clampPx(b.y + 28, canvas.height - 14));
   ctx.fillStyle = "rgba(1, 8, 5, 0.72)";
-  ctx.fillRect(10, 10, 210, 28);
+  ctx.fillRect(10, 10, isFrontal ? 250 : 210, 28);
   ctx.fillStyle = "#eafff1";
-  ctx.fillText("Entrada: A -> B", 22, 30);
+  ctx.fillText(isFrontal ? "Frontal: A lejos -> B cerca" : "Entrada: A -> B", 22, 30);
+  ctx.restore();
+}
+
+function drawFrontalFlowGuides(ctx, canvas, config) {
+  const bounds = roiBounds(config.roi);
+  const yA = lineAxisMid(config.lineA, config) * canvas.height;
+  const yB = lineAxisMid(config.lineB, config) * canvas.height;
+  const left = bounds.left * canvas.width;
+  const right = bounds.right * canvas.width;
+  const lanes = [0.25, 0.5, 0.75];
+  ctx.save();
+  ctx.strokeStyle = "rgba(108, 231, 255, 0.65)";
+  ctx.fillStyle = "rgba(108, 231, 255, 0.8)";
+  ctx.lineWidth = 2;
+  lanes.forEach((lane) => {
+    const x = left + (right - left) * lane;
+    drawArrow(ctx, { x, y: yA + 10 }, { x, y: yB - 10 });
+  });
   ctx.restore();
 }
 
