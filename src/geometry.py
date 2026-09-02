@@ -75,11 +75,11 @@ def default_line_positions(orientation: str, entry_direction: str) -> tuple[floa
     entry_direction = normalize_entry_direction(entry_direction, orientation)
     if orientation == "horizontal":
         if entry_direction == "TOP_TO_BOTTOM":
-            return 0.35, 0.65
-        return 0.65, 0.35
+            return 0.32, 0.46
+        return 0.68, 0.54
     if entry_direction == "RIGHT_TO_LEFT":
-        return 0.65, 0.35
-    return 0.35, 0.65
+        return 0.68, 0.54
+    return 0.32, 0.46
 
 
 def normalize_orientation(value: str | None) -> str:
@@ -92,7 +92,7 @@ def normalize_entry_direction(value: str | None, orientation: str = "vertical") 
     direction = str(value or "").upper()
     if direction in ENTRY_DIRECTIONS_BY_ORIENTATION[orientation]:
         return direction
-    return "BOTTOM_TO_TOP" if orientation == "horizontal" else "LEFT_TO_RIGHT"
+    return "TOP_TO_BOTTOM" if orientation == "horizontal" else "LEFT_TO_RIGHT"
 
 
 def direction_positions_valid(a_position: float, b_position: float, orientation: str, entry_direction: str) -> bool:

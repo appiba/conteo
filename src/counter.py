@@ -336,4 +336,4 @@ class EntryCounter:
     def _origin_tolerance(self, line: Line) -> float:
         other_axis = 0 if self.line_orientation == "horizontal" else 1
         line_size = abs(line[0][other_axis] - line[1][other_axis]) or 1.0
-        return max(2.0, line_size * 0.015)
+        return max(2.0, line_size * 0.055)

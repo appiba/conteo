@@ -19,16 +19,19 @@ const CAMERA_CONFIG_FIELDS = [
   "cameraDeviceId",
 ];
 
+const FAST_COUNTING_VERSION = "fast-lines-20260902";
+
 const DEFAULT_CONFIG = {
-  lineA: [{ x: 0.38, y: 0.04 }, { x: 0.38, y: 0.98 }],
-  lineB: [{ x: 0.62, y: 0.04 }, { x: 0.62, y: 0.98 }],
+  lineA: [{ x: 0.32, y: 0.04 }, { x: 0.32, y: 0.98 }],
+  lineB: [{ x: 0.46, y: 0.04 }, { x: 0.46, y: 0.98 }],
   roi: [{ x: 0.02, y: 0.04 }, { x: 0.98, y: 0.04 }, { x: 0.98, y: 0.98 }, { x: 0.02, y: 0.98 }],
   lineOrientation: "vertical",
   entryDirection: "LEFT_TO_RIGHT",
-  lineAPosition: 0.38,
-  lineBPosition: 0.62,
-  lineSeparation: 0.24,
-  minLineSeparation: 0.05,
+  lineAPosition: 0.32,
+  lineBPosition: 0.46,
+  lineSeparation: 0.14,
+  minLineSeparation: 0.04,
+  fastCountingVersion: FAST_COUNTING_VERSION,
   calibrationId: null,
   sessionId: null,
   deviceId: null,
@@ -53,13 +56,14 @@ const DETECTION_THRESHOLD = 0.30;
 const TRACK_MATCH_DISTANCE = 180;
 const TRACK_TTL_MS = 3600;
 const TRACK_PREDICTION_MAX_MS = 1200;
-const ORIGIN_SIDE_TOLERANCE = 0.015;
+const ORIGIN_SIDE_TOLERANCE = 0.055;
+const FAST_ENTRY_COMPLETION_TOLERANCE = 0.08;
 const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
 const CAMERA_NAME = "ENTRADA_01";
-const MIN_LINE_SEPARATION = 0.05;
+const MIN_LINE_SEPARATION = 0.04;
 const CAMERA_START_TIMEOUT_MS = 25000;
 const ROI_EDGE_TOLERANCE = 0.10;
 const LINE_EDGE_TOLERANCE = 0.12;
@@ -1664,7 +1668,7 @@ function shouldCompleteEdgeEntry(stored, track, config = state.config) {
   if (!isEntryCandidate(stored)) return false;
   if (!movingInEntryDirection(track.previousPoint, track.point, config)) return false;
   if (crossedDestinationInEntryDirection(track.previousPoint, track.point, config)) return true;
-  return passedDestinationGate(track.point, config, 0.04) && boxTouchesFrameEdge(track.box);
+  return passedDestinationGate(track.point, config, FAST_ENTRY_COMPLETION_TOLERANCE) && boxTouchesFrameEdge(track.box);
 }
 
 function crossedOriginInEntryDirection(previous, current, config = state.config) {
@@ -1839,9 +1843,9 @@ function defaultLinePositions(orientation, direction) {
   const normalizedOrientation = normalizeOrientation(orientation);
   const normalizedDirection = normalizeDirection(direction, normalizedOrientation);
   if (normalizedOrientation === "horizontal") {
-    return normalizedDirection === "TOP_TO_BOTTOM" ? [0.35, 0.65] : [0.65, 0.35];
+    return normalizedDirection === "TOP_TO_BOTTOM" ? [0.32, 0.46] : [0.68, 0.54];
   }
-  return normalizedDirection === "RIGHT_TO_LEFT" ? [0.65, 0.35] : [0.35, 0.65];
+  return normalizedDirection === "RIGHT_TO_LEFT" ? [0.68, 0.54] : [0.32, 0.46];
 }
 
 function inferLineOrientation(config) {
@@ -1860,6 +1864,7 @@ function updateCalibrationMetadata(config) {
   config.lineAPosition = round(linePosition(config.lineA, config), 4);
   config.lineBPosition = round(linePosition(config.lineB, config), 4);
   config.lineSeparation = round(Math.abs(config.lineAPosition - config.lineBPosition), 4);
+  config.fastCountingVersion = FAST_COUNTING_VERSION;
   config.calibrationId = config.calibrationId || makeId("cal");
   config.sessionId = config.sessionId || null;
   config.deviceId = config.deviceId || null;
@@ -1921,6 +1926,30 @@ function alignLinesToDirection(config) {
   }
   updateCalibrationMetadata(config);
   return config;
+}
+
+function applyFastCountingMigration(config, rawConfig) {
+  if (!config || !rawConfig || rawConfig.fastCountingVersion === FAST_COUNTING_VERSION) return false;
+  const shouldTighten = config.lineSeparation >= 0.18 || nearWideDefaultLines(config);
+  if (shouldTighten) {
+    const [aPosition, bPosition] = defaultLinePositions(config.lineOrientation, config.entryDirection);
+    setLinePositions(config, aPosition, bPosition);
+  }
+  config.fastCountingVersion = FAST_COUNTING_VERSION;
+  return true;
+}
+
+function nearWideDefaultLines(config) {
+  const a = Number(config.lineAPosition);
+  const b = Number(config.lineBPosition);
+  return nearLinePair(a, b, 0.35, 0.65)
+    || nearLinePair(a, b, 0.65, 0.35)
+    || nearLinePair(a, b, 0.38, 0.62)
+    || nearLinePair(a, b, 0.62, 0.38);
+}
+
+function nearLinePair(a, b, expectedA, expectedB) {
+  return Math.abs(a - expectedA) <= 0.035 && Math.abs(b - expectedB) <= 0.035;
 }
 
 function normalizeConfig(config, options = {}) {
@@ -2560,6 +2589,10 @@ function loadState() {
   }
   if (saved.config) {
     state.config = normalizeConfig(saved.config);
+    if (applyFastCountingMigration(state.config, saved.config)) {
+      state.calibrationDraft = cloneConfig(state.config);
+      saveState();
+    }
   }
 }
 

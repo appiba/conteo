@@ -16,6 +16,7 @@ class GeometryTest(unittest.TestCase):
     def test_default_vertical_left_to_right_places_a_before_b(self):
         a, b = default_line_positions("vertical", "LEFT_TO_RIGHT")
         self.assertLess(a, b)
+        self.assertAlmostEqual(b - a, 0.14, places=2)
         self.assertTrue(direction_positions_valid(a, b, "vertical", "LEFT_TO_RIGHT"))
 
     def test_default_roi_reaches_near_frame_edges(self):
@@ -32,6 +33,13 @@ class GeometryTest(unittest.TestCase):
         a, b = default_line_positions("horizontal", "BOTTOM_TO_TOP")
         self.assertGreater(a, b)
         self.assertTrue(direction_positions_valid(a, b, "horizontal", "BOTTOM_TO_TOP"))
+
+    def test_default_horizontal_top_to_bottom_is_fast_for_front_camera(self):
+        a, b = default_line_positions("horizontal", "TOP_TO_BOTTOM")
+        self.assertLess(a, b)
+        self.assertAlmostEqual(a, 0.32, places=2)
+        self.assertAlmostEqual(b, 0.46, places=2)
+        self.assertTrue(direction_positions_valid(a, b, "horizontal", "TOP_TO_BOTTOM"))
 
     def test_horizontal_crossing_uses_y_axis(self):
         line = ((0.0, 100.0), (300.0, 100.0))

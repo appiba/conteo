@@ -17,49 +17,49 @@
   "auto_start": true,
   "line_a": [
     [
-      486,
-      86
+      410,
+      28
     ],
     [
-      486,
-      662
+      410,
+      705
     ]
   ],
   "line_b": [
     [
-      793,
-      86
+      589,
+      28
     ],
     [
-      793,
-      662
+      589,
+      705
     ]
   ],
   "roi": [
     [
-      102,
-      86
+      25,
+      28
     ],
     [
-      1177,
-      86
+      1254,
+      28
     ],
     [
-      1177,
-      662
+      1254,
+      705
     ],
     [
-      102,
-      662
+      25,
+      705
     ]
   ],
   "track_ttl_frames": 70,
   "line_orientation": "vertical",
   "entry_direction": "LEFT_TO_RIGHT",
-  "line_a_position": 0.38,
-  "line_b_position": 0.62,
-  "line_separation": 0.24,
-  "min_line_separation": 0.05,
+  "line_a_position": 0.32,
+  "line_b_position": 0.46,
+  "line_separation": 0.14,
+  "min_line_separation": 0.04,
   "calibration_id": "",
   "session_id": "",
   "device_id": "",

@@ -27,6 +27,8 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(config["iou"], 0.70)
             self.assertEqual(config["imgsz"], 960)
             self.assertEqual(config["entry_direction"], "LEFT_TO_RIGHT")
+            self.assertEqual(config["line_a_position"], 0.32)
+            self.assertEqual(config["line_b_position"], 0.46)
             self.assertEqual(config["camera_resolution"], "1280x720")
             self.assertEqual(config["camera_fit_mode"], "fit")
 
