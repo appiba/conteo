@@ -46,12 +46,14 @@ const DEFAULT_CONFIG = {
 
 const DIRECTIONS_BY_ORIENTATION = {
   vertical: ["LEFT_TO_RIGHT", "RIGHT_TO_LEFT"],
-  horizontal: ["BOTTOM_TO_TOP", "TOP_TO_BOTTOM"],
+  horizontal: ["TOP_TO_BOTTOM", "BOTTOM_TO_TOP"],
 };
 
 const DETECTION_THRESHOLD = 0.30;
 const TRACK_MATCH_DISTANCE = 180;
-const TRACK_TTL_MS = 2600;
+const TRACK_TTL_MS = 3600;
+const TRACK_PREDICTION_MAX_MS = 1200;
+const ORIGIN_SIDE_TOLERANCE = 0.015;
 const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
@@ -92,7 +94,10 @@ const state = {
   debugStats: {
     detectedPersons: 0,
     activeTracks: 0,
+    entryCandidates: 0,
+    ignoredTracks: 0,
     entriesConfirmed: 0,
+    trackRows: [],
     last1Minute: 0,
     last5Minutes: 0,
     liveRatePerMinute: 0,
@@ -121,6 +126,10 @@ const els = {
   countValue: document.querySelector("#countValue"),
   detectedCount: document.querySelector("#detectedCount"),
   activeTrackCount: document.querySelector("#activeTrackCount"),
+  entryCandidateCount: document.querySelector("#entryCandidateCount"),
+  ignoredTrackCount: document.querySelector("#ignoredTrackCount"),
+  entriesConfirmedCount: document.querySelector("#entriesConfirmedCount"),
+  trackDebugList: document.querySelector("#trackDebugList"),
   realCount: document.querySelector("#realCount"),
   accuracyValue: document.querySelector("#accuracyValue"),
   requestedResolution: document.querySelector("#requestedResolution"),
@@ -1072,6 +1081,7 @@ async function loop() {
     } else {
       updateCount(tracks, state.config);
     }
+    updateTrackDebugStats(tracks, people.length);
     renderDebugMetrics();
     logDebugCounts(people.length, tracks.length);
     drawOverlay(els.overlay, tracks, state.config);
@@ -1109,19 +1119,36 @@ function updateTracks(detections, config = state.config) {
     if (!track || !detection) return;
     const point = bottomCenter(detection.box);
     if (!track.firstPoint) track.firstPoint = track.point;
-    track.previousPoint = track.point;
+    const previousPoint = track.point;
+    const elapsed = Math.max(16, now - (track.lastSeen || now));
+    track.previousPoint = previousPoint;
     track.point = point;
     track.box = detection.box;
     track.score = detection.score;
+    track.velocity = {
+      x: (point.x - previousPoint.x) / elapsed,
+      y: (point.y - previousPoint.y) / elapsed,
+    };
+    track.lastDirection = movementDirection(previousPoint, point, config);
     track.lastSeen = now;
+    track.missingSince = null;
+    track.visible = true;
+    track.predicted = false;
     matchedTrackIds.add(candidate.id);
     matchedDetectionIds.add(candidate.index);
     active.push({ id: candidate.id, ...track });
   });
 
   for (const [id, track] of state.tracks) {
-    if (!matchedTrackIds.has(id) && now - track.lastSeen > TRACK_TTL_MS) {
+    if (matchedTrackIds.has(id)) continue;
+    const missingFor = now - track.lastSeen;
+    if (missingFor > TRACK_TTL_MS) {
       state.tracks.delete(id);
+      continue;
+    }
+    if (shouldKeepOccludedTrack(track)) {
+      if (!track.missingSince) track.missingSince = now;
+      active.push(predictedTrackSnapshot(id, track, now, config));
     }
   }
 
@@ -1129,21 +1156,76 @@ function updateTracks(detections, config = state.config) {
     if (matchedDetectionIds.has(index)) return;
     const point = bottomCenter(detection.box);
     const id = state.nextTrackId++;
+    const originStatus = classifyTrackOrigin(point, config);
+    const ignoredEntry = originStatus === "destination";
     const track = {
       firstPoint: point,
       point,
       previousPoint: null,
       box: detection.box,
       score: detection.score,
-      phase: "new",
+      velocity: null,
+      phase: ignoredEntry ? "ignore" : "new",
       counted: false,
+      crossedA: false,
+      crossedB: false,
+      originStatus,
+      originValid: originStatus === "valid",
+      ignoredEntry,
+      lastDirection: "none",
       lastSeen: now,
+      missingSince: null,
+      visible: true,
+      predicted: false,
     };
     state.tracks.set(id, track);
     active.push({ id, ...track });
   });
 
   return active.filter((track) => trackInCountingZone(track, config));
+}
+
+function shouldKeepOccludedTrack(track) {
+  if (!track || track.counted || track.phase === "counted" || track.phase === "exit" || track.phase === "ignore") return false;
+  return isEntryCandidate(track) && (track.phase === "crossedA" || track.crossedA);
+}
+
+function predictedTrackSnapshot(id, track, now, config = state.config) {
+  const canPredict = canPredictTowardDestination(track, config);
+  const elapsed = Math.min(TRACK_PREDICTION_MAX_MS, Math.max(0, now - track.lastSeen));
+  const delta = canPredict ? {
+    x: (track.velocity?.x || 0) * elapsed,
+    y: (track.velocity?.y || 0) * elapsed,
+  } : { x: 0, y: 0 };
+  const point = { x: track.point.x + delta.x, y: track.point.y + delta.y };
+  return {
+    id,
+    ...track,
+    previousPoint: canPredict ? track.point : null,
+    point,
+    box: offsetBox(track.box, delta.x, delta.y),
+    visible: false,
+    predicted: canPredict,
+    missingFor: now - track.lastSeen,
+  };
+}
+
+function canPredictTowardDestination(track, config = state.config) {
+  if (!track.velocity || !isEntryCandidate(track) || track.phase !== "crossedA") return false;
+  const nextPoint = {
+    x: track.point.x + track.velocity.x * TRACK_PREDICTION_MAX_MS,
+    y: track.point.y + track.velocity.y * TRACK_PREDICTION_MAX_MS,
+  };
+  return movingInEntryDirection(track.point, nextPoint, config);
+}
+
+function offsetBox(box, deltaX, deltaY) {
+  return {
+    x: box.x + deltaX,
+    y: box.y + deltaY,
+    w: box.w,
+    h: box.h,
+  };
 }
 
 function updateCount(tracks, config = state.config) {
@@ -1154,13 +1236,14 @@ function updateCount(tracks, config = state.config) {
     let countedThisTrack = false;
     orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
       if (countedThisTrack) return;
+      maybePromoteUncertainOrigin(stored, track, crossing, config);
       console.debug(`Track ${track.id} crossed ${crossing}`);
       if (shouldCountLateEntry(stored, track, crossing, config)) {
         confirmTrackEntry(stored, track);
         countedThisTrack = true;
         return;
       }
-      if (applyCrossing(stored, crossing)) {
+      if (applyCrossing(stored, crossing, config, track)) {
         confirmTrackEntry(stored, track);
         countedThisTrack = true;
       }
@@ -1175,6 +1258,8 @@ function updateCount(tracks, config = state.config) {
 function confirmTrackEntry(stored, track) {
   stored.phase = "counted";
   stored.counted = true;
+  stored.crossedA = true;
+  stored.crossedB = true;
   registerEntry(track);
   console.debug(`Track ${track.id} ENTRY CONFIRMED`);
   saveState();
@@ -1510,48 +1595,81 @@ function orderedCrossings(previous, current, config = state.config) {
   return crossed.map((item) => item.name);
 }
 
-function applyCrossing(track, crossing) {
-  if (track.counted || track.phase === "counted" || track.phase === "exit") return false;
-
-  const crossingPhase = crossing === "A" ? "crossedA" : "crossedB";
-
-  if (track.phase === "new") {
-    track.phase = crossingPhase;
+function applyCrossing(track, crossing, config = state.config, movementTrack = track) {
+  if (track.counted || track.phase === "counted" || track.phase === "exit" || track.phase === "ignore") return false;
+  if (track.ignoredEntry || track.originStatus === "destination") {
+    track.phase = "ignore";
+    track.ignoredEntry = true;
     return false;
   }
 
-  if (track.phase === crossingPhase) {
+  if (crossing === "A") track.crossedA = true;
+  if (crossing === "B") track.crossedB = true;
+
+  if (track.phase === "new") {
+    if (crossing === "A") {
+      if (!isEntryCandidate(track)) return false;
+      track.phase = "crossedA";
+      return false;
+    }
+    track.phase = "exit";
+    track.ignoredEntry = true;
+    return false;
+  }
+
+  if (track.phase === "crossedA") {
+    if (crossing === "B") {
+      if (!isEntryCandidate(track) || !movingInEntryDirection(movementTrack.previousPoint, movementTrack.point, config)) {
+        track.phase = "exit";
+        track.ignoredEntry = true;
+        return false;
+      }
+      track.phase = "counted";
+      track.counted = true;
+      return true;
+    }
     track.phase = "new";
     return false;
   }
 
-  if (track.phase === "crossedA" && crossing === "B") {
-    track.phase = "counted";
-    track.counted = true;
-    return true;
-  }
-
   if (track.phase === "crossedB" && crossing === "A") {
     track.phase = "exit";
+    track.ignoredEntry = true;
     return false;
   }
 
   return false;
 }
 
+function maybePromoteUncertainOrigin(stored, track, crossing, config = state.config) {
+  if (!stored || stored.originStatus !== "uncertain" || crossing !== "A") return;
+  if (!track.previousPoint || !track.point) return;
+  if (!crossedOriginInEntryDirection(track.previousPoint, track.point, config)) return;
+  stored.originStatus = "valid";
+  stored.originValid = true;
+  stored.ignoredEntry = false;
+}
+
 function shouldCountLateEntry(stored, track, crossing, config = state.config) {
   if (stored.counted || stored.phase !== "new" || crossing !== "B") return false;
+  if (!isEntryCandidate(stored)) return false;
   if (!track.previousPoint || !track.firstPoint) return false;
   return crossedDestinationInEntryDirection(track.previousPoint, track.point, config)
-    && pointStartedBeforeDestination(track.firstPoint, config)
+    && pointStartedOnOriginSide(stored.firstPoint || track.firstPoint, config)
     && pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE);
 }
 
 function shouldCompleteEdgeEntry(stored, track, config = state.config) {
   if (stored.counted || stored.phase !== "crossedA" || !track.previousPoint) return false;
+  if (!isEntryCandidate(stored)) return false;
   if (!movingInEntryDirection(track.previousPoint, track.point, config)) return false;
   if (crossedDestinationInEntryDirection(track.previousPoint, track.point, config)) return true;
   return passedDestinationGate(track.point, config, 0.04) && boxTouchesFrameEdge(track.box);
+}
+
+function crossedOriginInEntryDirection(previous, current, config = state.config) {
+  return movingInEntryDirection(previous, current, config)
+    && crossedLineAxis(previous, current, config.lineA, config);
 }
 
 function crossedDestinationInEntryDirection(previous, current, config = state.config) {
@@ -1568,15 +1686,46 @@ function crossedLineAxis(previous, current, line, config = state.config) {
 }
 
 function movingInEntryDirection(previous, current, config = state.config) {
+  if (!previous || !current) return false;
   const delta = pointAxisPixel(current, config) - pointAxisPixel(previous, config);
   const minimum = Math.max(1, axisPixelSize(config) * 0.002);
   return delta * entryDirectionSign(config) >= minimum;
 }
 
-function pointStartedBeforeDestination(point, config = state.config) {
+function pointStartedOnOriginSide(point, config = state.config) {
+  const gate = lineAxisPixel(config.lineA, config);
+  const axis = pointAxisPixel(point, config);
+  const tolerancePx = axisPixelSize(config) * ORIGIN_SIDE_TOLERANCE;
+  return (axis - gate) * entryDirectionSign(config) <= tolerancePx;
+}
+
+function pointOnDestinationSide(point, config = state.config) {
   const gate = lineAxisPixel(config.lineB, config);
   const axis = pointAxisPixel(point, config);
-  return (axis - gate) * entryDirectionSign(config) < 0;
+  const tolerancePx = axisPixelSize(config) * ORIGIN_SIDE_TOLERANCE;
+  return (axis - gate) * entryDirectionSign(config) >= -tolerancePx;
+}
+
+function classifyTrackOrigin(point, config = state.config) {
+  if (pointStartedOnOriginSide(point, config)) return "valid";
+  if (pointOnDestinationSide(point, config)) return "destination";
+  return "uncertain";
+}
+
+function isEntryCandidate(track) {
+  return Boolean(track && (track.originValid || track.originStatus === "valid"));
+}
+
+function isIgnoredTrack(track) {
+  return Boolean(track && (track.ignoredEntry || track.phase === "exit" || track.phase === "ignore" || track.originStatus === "destination"));
+}
+
+function movementDirection(previous, current, config = state.config) {
+  if (!previous || !current) return "none";
+  const delta = pointAxisPixel(current, config) - pointAxisPixel(previous, config);
+  const minimum = Math.max(1, axisPixelSize(config) * 0.002);
+  if (Math.abs(delta) < minimum) return "none";
+  return delta * entryDirectionSign(config) > 0 ? "entry" : "reverse";
 }
 
 function passedDestinationGate(point, config = state.config, tolerance = 0) {
@@ -2045,10 +2194,20 @@ function updateCalibrationProbe(tracks) {
   const config = draftConfig();
   let probeCount = 0;
   tracks.forEach((track) => {
-    const memory = state.calibrationProbe.tracks.get(track.id) || { phase: "new", counted: false };
+    const memory = state.calibrationProbe.tracks.get(track.id) || {
+      phase: "new",
+      counted: false,
+      crossedA: false,
+      crossedB: false,
+      originStatus: "valid",
+      originValid: true,
+      ignoredEntry: false,
+    };
     if (track.previousPoint) {
+      memory.previousPoint = track.previousPoint;
+      memory.point = track.point;
       orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
-        if (applyCrossing(memory, crossing)) {
+        if (applyCrossing(memory, crossing, config)) {
           probeCount += 1;
           state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now() });
         }
@@ -2271,18 +2430,80 @@ function renderAll() {
 function renderDebugMetrics(summary = buildDailySummary(state.events, state.sessions)) {
   els.detectedCount.textContent = state.debugStats.detectedPersons;
   els.activeTrackCount.textContent = state.debugStats.activeTracks;
+  if (els.entryCandidateCount) els.entryCandidateCount.textContent = state.debugStats.entryCandidates;
+  if (els.ignoredTrackCount) els.ignoredTrackCount.textContent = state.debugStats.ignoredTracks;
+  if (els.entriesConfirmedCount) els.entriesConfirmedCount.textContent = state.count;
   state.debugStats.entriesConfirmed = state.count;
   state.debugStats.last1Minute = summary.last_1_minute;
   state.debugStats.last5Minutes = summary.last_5_minutes;
   state.debugStats.liveRatePerMinute = summary.live_rate_per_minute;
   state.debugStats.projectedPeoplePerHour = summary.projected_people_per_hour;
   state.debugStats.currentBucket = summary.current_bucket;
+  renderTrackDebugList();
   if (state.realCount > 0) {
     const accuracy = Math.min(999.9, (state.count / state.realCount) * 100);
     els.accuracyValue.textContent = `${accuracy.toFixed(1)}%`;
   } else {
     els.accuracyValue.textContent = "--";
   }
+}
+
+function updateTrackDebugStats(tracks, visibleCount = state.debugStats.detectedPersons) {
+  const mergedTracks = tracks.map((track) => {
+    const stored = state.tracks.get(track.id) || {};
+    return {
+      id: track.id,
+      ...stored,
+      ...track,
+      phase: stored.phase || track.phase,
+      counted: Boolean(stored.counted || track.counted),
+      crossedA: Boolean(stored.crossedA || track.crossedA),
+      crossedB: Boolean(stored.crossedB || track.crossedB),
+      originStatus: stored.originStatus || track.originStatus,
+      originValid: Boolean(stored.originValid || track.originValid),
+      ignoredEntry: Boolean(stored.ignoredEntry || track.ignoredEntry),
+    };
+  });
+  state.debugStats.detectedPersons = visibleCount;
+  state.debugStats.activeTracks = mergedTracks.length;
+  state.debugStats.entryCandidates = mergedTracks.filter((track) => isEntryCandidate(track) && !isIgnoredTrack(track) && !track.counted).length;
+  state.debugStats.ignoredTracks = mergedTracks.filter((track) => isIgnoredTrack(track)).length;
+  state.debugStats.trackRows = mergedTracks
+    .sort((left, right) => left.id - right.id)
+    .slice(0, 12)
+    .map((track) => trackDebugText(track));
+}
+
+function trackDebugText(track) {
+  const originLabels = {
+    valid: "ORIGEN OK",
+    uncertain: "ORIGEN DUDOSO",
+    destination: "DESDE B",
+  };
+  const dirLabels = {
+    entry: "DIR A->B",
+    reverse: "DIR B->A",
+    none: "DIR --",
+  };
+  const origin = originLabels[track.originStatus] || "ORIGEN --";
+  const direction = dirLabels[track.lastDirection] || "DIR --";
+  const crossedA = track.crossedA || track.phase === "crossedA" || track.phase === "counted";
+  const crossedB = track.crossedB || track.phase === "counted";
+  const stateLabel = track.counted
+    ? "COUNTED"
+    : isIgnoredTrack(track)
+      ? "NO CONTAR"
+      : String(track.phase || "new").toUpperCase();
+  const visibility = track.predicted ? "OCULTO" : "VISIBLE";
+  return `ID ${track.id} ${origin} ${direction} A ${crossedA ? "SI" : "NO"} B ${crossedB ? "SI" : "NO"} ${stateLabel} ${visibility}`;
+}
+
+function renderTrackDebugList() {
+  if (!els.trackDebugList) return;
+  const rows = state.debugStats.trackRows || [];
+  els.trackDebugList.innerHTML = rows.length
+    ? rows.map((row) => `<span>${escapeHtml(row)}</span>`).join("")
+    : "<span>Sin tracks activos</span>";
 }
 
 function renderLiveSummary(summary) {

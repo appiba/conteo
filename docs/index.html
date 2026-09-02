@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app.js?v=near-camera-20260901"></script>
+  <script defer src="./app.js?v=track-origin-20260902"></script>
 </head>
 <body>
   <main class="shell">
@@ -63,6 +63,22 @@
           <div>
             <span>Resolucion real</span>
             <strong class="metric-text" id="realResolution">--</strong>
+          </div>
+          <div>
+            <span>Candidatos entrada</span>
+            <strong id="entryCandidateCount">0</strong>
+          </div>
+          <div>
+            <span>Ignorados direccion</span>
+            <strong id="ignoredTrackCount">0</strong>
+          </div>
+          <div>
+            <span>Entradas confirmadas</span>
+            <strong id="entriesConfirmedCount">0</strong>
+          </div>
+          <div class="track-debug-card">
+            <span>Detalle por ID</span>
+            <p id="trackDebugList" class="track-debug-list"><span>Sin tracks activos</span></p>
           </div>
         </section>
 
@@ -136,8 +152,8 @@
             <div class="segmented direction-grid">
               <button class="active" data-direction="LEFT_TO_RIGHT" type="button">Izq → Der</button>
               <button data-direction="RIGHT_TO_LEFT" type="button">Der → Izq</button>
-              <button data-direction="BOTTOM_TO_TOP" type="button">Abajo → Arriba</button>
               <button data-direction="TOP_TO_BOTTOM" type="button">Arriba → Abajo</button>
+              <button data-direction="BOTTOM_TO_TOP" type="button">Abajo → Arriba</button>
             </div>
           </div>
           <div class="calibration-status" id="calibrationStatus">Ajusta A, B o Zona y guarda.</div>

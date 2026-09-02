@@ -57,8 +57,11 @@ class EntryCounterTest(unittest.TestCase):
     def test_does_not_count_when_person_backs_out_after_a(self):
         self.assertEqual(self.run_path([50, 120, 80, 50]), 0)
 
-    def test_counts_late_entry_when_close_person_starts_between_lines(self):
-        self.assertEqual(self.run_path([150, 220]), 1)
+    def test_uncertain_track_between_lines_does_not_count_without_origin_evidence(self):
+        self.assertEqual(self.run_path([150, 220]), 0)
+
+    def test_uncertain_track_counts_after_returning_to_origin_and_crossing_a_then_b(self):
+        self.assertEqual(self.run_path([150, 80, 120, 220]), 1)
 
     def test_counts_crossing_near_frame_edge(self):
         self.assertEqual(self.run_path([(50, 330), (120, 330), (220, 330)]), 1)
@@ -82,6 +85,22 @@ class EntryCounterTest(unittest.TestCase):
             total_increment += counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index).increment
         self.assertEqual(total_increment, 2)
 
+    def test_counts_six_people_as_six_independent_track_events(self):
+        counter = EntryCounter(initial_count=0)
+        total_increment = 0
+        paths = {
+            1: [40, 120, 170, 230],
+            2: [45, 125, 175, 235],
+            3: [50, 130, 180, 240],
+            4: [55, 135, 185, 245],
+            5: [60, 140, 190, 250],
+            6: [65, 145, 195, 255],
+        }
+        for frame_index in range(4):
+            people = [person_at_point(path[frame_index], track_id=track_id) for track_id, path in paths.items()]
+            total_increment += counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index).increment
+        self.assertEqual(total_increment, 6)
+
     def test_counts_one_entry_while_another_exits(self):
         counter = EntryCounter(initial_count=0)
         total_increment = 0
@@ -93,6 +112,9 @@ class EntryCounterTest(unittest.TestCase):
             people = [person_at_point(path[frame_index], track_id=track_id) for track_id, path in paths.items()]
             total_increment += counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index).increment
         self.assertEqual(total_increment, 1)
+
+    def test_track_created_on_destination_side_never_counts_with_same_id(self):
+        self.assertEqual(self.run_path([250, 180, 80, 120, 220]), 0)
 
     def test_vertical_counts_right_to_left_when_a_is_on_the_right(self):
         self.assertEqual(
@@ -117,6 +139,26 @@ class EntryCounterTest(unittest.TestCase):
             ),
             1,
         )
+
+    def test_horizontal_counts_people_on_left_and_right(self):
+        counter = EntryCounter(initial_count=0)
+        total_increment = 0
+        left_lane = [(65, 50), (65, 120), (65, 160), (65, 220)]
+        right_lane = [(235, 55), (235, 130), (235, 170), (235, 230)]
+        for frame_index in range(4):
+            people = [
+                person_at_point(*left_lane[frame_index], track_id=1),
+                person_at_point(*right_lane[frame_index], track_id=2),
+            ]
+            total_increment += counter.update(
+                people,
+                LINE_A_TOP,
+                LINE_B_BOTTOM,
+                frame_index,
+                entry_direction="TOP_TO_BOTTOM",
+                line_orientation="horizontal",
+            ).increment
+        self.assertEqual(total_increment, 2)
 
     def test_horizontal_counts_bottom_to_top_when_a_is_below(self):
         points = [(150, 250), (150, 180), (150, 140), (150, 80)]

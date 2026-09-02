@@ -289,6 +289,28 @@ canvas {
   word-break: break-word;
 }
 
+.debug-panel .track-debug-card {
+  grid-column: 1 / -1;
+  align-content: start;
+  min-height: 84px;
+}
+
+.track-debug-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  color: #d8fff0;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.track-debug-list span {
+  color: #d8fff0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: none;
+}
+
 .debug-panel input {
   min-width: 0;
   width: 100%;

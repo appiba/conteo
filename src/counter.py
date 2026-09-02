@@ -36,6 +36,11 @@ class TrackMemory:
     previous_point: Point | None = None
     last_seen: int = 0
     counted: bool = False
+    crossed_a: bool = False
+    crossed_b: bool = False
+    origin_status: str = "UNCERTAIN"
+    origin_valid: bool = False
+    ignored_entry: bool = False
 
 
 class EntryCounter:
@@ -82,11 +87,17 @@ class EntryCounter:
             current_point = person.bottom_center
             if memory.first_point is None:
                 memory.first_point = current_point
+                memory.origin_status = self._classify_origin(current_point, line_a, line_b)
+                memory.origin_valid = memory.origin_status == "VALID"
+                if memory.origin_status == "DESTINATION":
+                    memory.ignored_entry = True
+                    memory.phase = "IGNORE_ENTRY"
             crossings = self._crossings(memory.previous_point, current_point, line_a, line_b)
             memory.last_seen = frame_index
 
             for crossing in crossings:
-                if self._should_count_late_entry(memory, current_point, line_b, crossing):
+                self._maybe_promote_uncertain_origin(memory, current_point, line_a, crossing)
+                if self._should_count_late_entry(memory, current_point, line_a, line_b, crossing):
                     if self._confirm_entry(memory, person, events):
                         increment += 1
                         self.total += 1
@@ -137,15 +148,36 @@ class EntryCounter:
         events: list[CounterEvent],
     ) -> bool:
         track_id = person.track_id
-        if memory.counted:
+        if memory.counted or memory.ignored_entry:
             return False
 
         crossing_phase = f"CROSSED_{crossing}"
 
-        if memory.phase in ("COUNTED", "EXITED"):
+        if memory.phase in ("COUNTED", "EXITED", "IGNORE_ENTRY"):
             return False
 
+        if crossing == "A":
+            memory.crossed_a = True
+        if crossing == "B":
+            memory.crossed_b = True
+
         if memory.phase == "NEW":
+            if crossing != "A":
+                memory.phase = "EXITED"
+                memory.ignored_entry = True
+                events.append(
+                    CounterEvent(
+                        track_id=track_id,
+                        kind="exit",
+                        message=f"ID {track_id}: salida detectada",
+                        age_group=person.age_group,
+                        age_confidence=person.age_confidence,
+                        confidence=person.confidence,
+                    )
+                )
+                return False
+            if not memory.origin_valid:
+                return False
             memory.phase = crossing_phase
             events.append(
                 CounterEvent(
@@ -178,6 +210,7 @@ class EntryCounter:
 
         if memory.phase == "CROSSED_B" and crossing == "A":
             memory.phase = "EXITED"
+            memory.ignored_entry = True
             events.append(
                 CounterEvent(
                     track_id=track_id,
@@ -196,20 +229,25 @@ class EntryCounter:
         self,
         memory: TrackMemory,
         current: Point,
+        line_a: Line,
         line_b: Line,
         crossing: str,
     ) -> bool:
         if memory.counted or memory.phase != "NEW" or crossing != "B":
             return False
+        if not memory.origin_valid or memory.ignored_entry:
+            return False
         if memory.previous_point is None or memory.first_point is None:
             return False
         return (
             self._crossed_destination_axis(memory.previous_point, current, line_b)
-            and self._point_before_destination(memory.first_point, line_b)
+            and self._point_on_origin_side(memory.first_point, line_a)
         )
 
     def _should_complete_edge_entry(self, memory: TrackMemory, current: Point, line_b: Line) -> bool:
         if memory.counted or memory.phase != "CROSSED_A" or memory.previous_point is None:
+            return False
+        if not memory.origin_valid or memory.ignored_entry:
             return False
         if not self._moving_in_entry_direction(memory.previous_point, current):
             return False
@@ -224,6 +262,8 @@ class EntryCounter:
             return False
         memory.phase = "COUNTED"
         memory.counted = True
+        memory.crossed_a = True
+        memory.crossed_b = True
         events.append(
             CounterEvent(
                 track_id=person.track_id,
@@ -236,6 +276,29 @@ class EntryCounter:
         )
         return True
 
+    def _classify_origin(self, point: Point, line_a: Line, line_b: Line) -> str:
+        if self._point_on_origin_side(point, line_a):
+            return "VALID"
+        if self._point_on_destination_side(point, line_b):
+            return "DESTINATION"
+        return "UNCERTAIN"
+
+    def _maybe_promote_uncertain_origin(self, memory: TrackMemory, current: Point, line_a: Line, crossing: str) -> None:
+        if memory.origin_status != "UNCERTAIN" or crossing != "A" or memory.previous_point is None:
+            return
+        if self._crossed_origin_axis(memory.previous_point, current, line_a):
+            memory.origin_status = "VALID"
+            memory.origin_valid = True
+            memory.ignored_entry = False
+
+    def _crossed_origin_axis(self, previous: Point, current: Point, line_a: Line) -> bool:
+        if not self._moving_in_entry_direction(previous, current):
+            return False
+        gate = line_axis_mid(line_a, self.line_orientation)
+        previous_axis = self._axis_value(previous)
+        current_axis = self._axis_value(current)
+        return (previous_axis < gate <= current_axis) or (previous_axis > gate >= current_axis)
+
     def _crossed_destination_axis(self, previous: Point, current: Point, line_b: Line) -> bool:
         if not self._moving_in_entry_direction(previous, current):
             return False
@@ -247,8 +310,13 @@ class EntryCounter:
     def _moving_in_entry_direction(self, previous: Point, current: Point) -> bool:
         return (self._axis_value(current) - self._axis_value(previous)) * self._entry_sign() > 1e-6
 
-    def _point_before_destination(self, point: Point, line_b: Line) -> bool:
-        return (self._axis_value(point) - line_axis_mid(line_b, self.line_orientation)) * self._entry_sign() < 0
+    def _point_on_origin_side(self, point: Point, line: Line) -> bool:
+        tolerance = self._origin_tolerance(line)
+        return (self._axis_value(point) - line_axis_mid(line, self.line_orientation)) * self._entry_sign() <= tolerance
+
+    def _point_on_destination_side(self, point: Point, line: Line) -> bool:
+        tolerance = self._origin_tolerance(line)
+        return (self._axis_value(point) - line_axis_mid(line, self.line_orientation)) * self._entry_sign() >= -tolerance
 
     def _passed_destination(self, point: Point, line_b: Line, tolerance: float = 0.0) -> bool:
         gate = line_axis_mid(line_b, self.line_orientation)
@@ -264,3 +332,8 @@ class EntryCounter:
         if self.line_orientation == "horizontal":
             return -1 if self.entry_direction == "BOTTOM_TO_TOP" else 1
         return -1 if self.entry_direction == "RIGHT_TO_LEFT" else 1
+
+    def _origin_tolerance(self, line: Line) -> float:
+        other_axis = 0 if self.line_orientation == "horizontal" else 1
+        line_size = abs(line[0][other_axis] - line[1][other_axis]) or 1.0
+        return max(2.0, line_size * 0.015)
