@@ -19,18 +19,26 @@ const CAMERA_CONFIG_FIELDS = [
   "cameraDeviceId",
 ];
 
-const FAST_COUNTING_VERSION = "fast-lines-20260902";
+const FAST_COUNTING_VERSION = "frontal-proximity-20260903";
 
 const DEFAULT_CONFIG = {
-  lineA: [{ x: 0.32, y: 0.04 }, { x: 0.32, y: 0.98 }],
-  lineB: [{ x: 0.46, y: 0.04 }, { x: 0.46, y: 0.98 }],
-  roi: [{ x: 0.02, y: 0.04 }, { x: 0.98, y: 0.04 }, { x: 0.98, y: 0.98 }, { x: 0.02, y: 0.98 }],
+  lineA: [{ x: 0.30, y: 0.03 }, { x: 0.30, y: 0.99 }],
+  lineB: [{ x: 0.46, y: 0.03 }, { x: 0.46, y: 0.99 }],
+  roi: [{ x: 0.01, y: 0.03 }, { x: 0.99, y: 0.03 }, { x: 0.99, y: 0.99 }, { x: 0.01, y: 0.99 }],
   lineOrientation: "vertical",
+  countingMode: "LATERAL",
   entryDirection: "LEFT_TO_RIGHT",
-  lineAPosition: 0.32,
+  lineAPosition: 0.30,
   lineBPosition: 0.46,
-  lineSeparation: 0.14,
+  lineSeparation: 0.16,
   minLineSeparation: 0.04,
+  entryProximityThreshold: 0.66,
+  depthCalibration: {
+    enabled: false,
+    farLabel: "aprox. 3 m",
+    midLabel: "aprox. 2 m",
+    nearLabel: "aprox. 1 m",
+  },
   fastCountingVersion: FAST_COUNTING_VERSION,
   calibrationId: null,
   sessionId: null,
@@ -56,19 +64,23 @@ const DETECTION_THRESHOLD = 0.30;
 const TRACK_MATCH_DISTANCE = 180;
 const TRACK_TTL_MS = 3600;
 const TRACK_PREDICTION_MAX_MS = 1200;
+const FRONTAL_OCCLUSION_GRACE_MS = 1600;
 const ORIGIN_SIDE_TOLERANCE = 0.055;
 const FAST_ENTRY_COMPLETION_TOLERANCE = 0.08;
+const FRONTAL_FAST_ENTRY_TOLERANCE = 0.12;
+const FRONTAL_EDGE_MARGIN = 0.055;
 const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
-const REPORT_BUILD_VERSION = "pdf-report-20260902";
+const REPORT_BUILD_VERSION = "frontal-proximity-20260903";
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.04;
 const CAMERA_START_TIMEOUT_MS = 25000;
 const ROI_EDGE_TOLERANCE = 0.10;
 const LINE_EDGE_TOLERANCE = 0.12;
 const LEGACY_INSET_ROI = [{ x: 0.08, y: 0.12 }, { x: 0.92, y: 0.12 }, { x: 0.92, y: 0.92 }, { x: 0.08, y: 0.92 }];
+const FRONTAL_EXTENDED_ROI = [{ x: 0.01, y: 0.03 }, { x: 0.99, y: 0.03 }, { x: 0.99, y: 0.99 }, { x: 0.01, y: 0.99 }];
 const AGE_REPORT_LABELS = {
   children: "Ninos",
   adolescents: "Adolescentes",
@@ -178,6 +190,10 @@ const els = {
   centerLines: document.querySelector("#centerLines"),
   swapLines: document.querySelector("#swapLines"),
   testCalibration: document.querySelector("#testCalibration"),
+  proximityThreshold: document.querySelector("#proximityThreshold"),
+  proximityThresholdValue: document.querySelector("#proximityThresholdValue"),
+  calibrateDepth: document.querySelector("#calibrateDepth"),
+  extendFrontalZones: document.querySelector("#extendFrontalZones"),
   calibrationStatus: document.querySelector("#calibrationStatus"),
   cameraDevice: document.querySelector("#cameraDevice"),
   cameraResolution: document.querySelector("#cameraResolution"),
@@ -338,6 +354,50 @@ function wireUi() {
       setCalibrationStatus("A y B centradas. Presiona Guardar.", "warning");
       renderAll();
       setStatus("Lineas centradas");
+    });
+  }
+
+  if (els.extendFrontalZones) {
+    els.extendFrontalZones.addEventListener("click", () => {
+      ensureCalibrationDraft();
+      const next = cloneConfig(state.calibrationDraft);
+      next.lineOrientation = "horizontal";
+      next.entryDirection = normalizeDirection(next.entryDirection, next.lineOrientation);
+      extendFrontalZones(next);
+      updateCalibrationMetadata(next);
+      state.calibrationDraft = next;
+      state.activeTool = "linePair";
+      setCalibrationStatus("Zonas frontales extendidas al borde. Presiona Guardar.", "warning");
+      renderAll();
+      setStatus("Zonas al borde");
+    });
+  }
+
+  if (els.calibrateDepth) {
+    els.calibrateDepth.addEventListener("click", () => {
+      ensureCalibrationDraft();
+      const next = cloneConfig(state.calibrationDraft);
+      next.lineOrientation = "horizontal";
+      next.entryDirection = "TOP_TO_BOTTOM";
+      next.entryProximityThreshold = Number(next.entryProximityThreshold || DEFAULT_CONFIG.entryProximityThreshold);
+      extendFrontalZones(next);
+      setLinePositions(next, 0.36, 0.62);
+      next.depthCalibration = { ...DEFAULT_CONFIG.depthCalibration, enabled: true };
+      state.calibrationDraft = next;
+      state.activeTool = "linePair";
+      setCalibrationStatus("Profundidad aproximada lista: Lejos, medio y cerca. Ajusta A/B si hace falta y guarda.", "warning");
+      renderAll();
+      setStatus("Profundidad");
+    });
+  }
+
+  if (els.proximityThreshold) {
+    els.proximityThreshold.addEventListener("input", () => {
+      ensureCalibrationDraft();
+      state.calibrationDraft.entryProximityThreshold = clampNumber(els.proximityThreshold.value, 0.5, 0.9, DEFAULT_CONFIG.entryProximityThreshold);
+      updateCalibrationMetadata(state.calibrationDraft);
+      setCalibrationStatus(calibrationDistanceLabel(state.calibrationDraft), "warning");
+      renderAll();
     });
   }
 
@@ -1146,7 +1206,9 @@ function updateTracks(detections, config = state.config) {
       const center = bottomCenter(detection.box);
       const distance = Math.hypot(center.x - track.point.x, center.y - track.point.y);
       const overlap = boxIou(track.box, detection.box);
-      const adaptiveDistance = Math.max(TRACK_MATCH_DISTANCE, boxDiagonal(track.box) * 0.45);
+      const adaptiveDistance = isFrontalMode(config)
+        ? Math.max(TRACK_MATCH_DISTANCE * 1.45, boxDiagonal(track.box) * 1.35, boxDiagonal(detection.box) * 0.95)
+        : Math.max(TRACK_MATCH_DISTANCE, boxDiagonal(track.box) * 0.45);
       if (distance <= adaptiveDistance || overlap >= 0.08) {
         candidates.push({ id, index, score: overlap * 1000 - distance });
       }
@@ -1162,6 +1224,8 @@ function updateTracks(detections, config = state.config) {
     const point = bottomCenter(detection.box);
     if (!track.firstPoint) track.firstPoint = track.point;
     const previousPoint = track.point;
+    const previousBox = track.box;
+    const previousProximity = Number(track.proximityScore || 0);
     const elapsed = Math.max(16, now - (track.lastSeen || now));
     track.previousPoint = previousPoint;
     track.point = point;
@@ -1176,6 +1240,13 @@ function updateTracks(detections, config = state.config) {
     track.missingSince = null;
     track.visible = true;
     track.predicted = false;
+    updateFrontalTrackMemory(track, {
+      previousPoint,
+      previousBox,
+      previousProximity,
+      elapsedMs: elapsed,
+      config,
+    });
     matchedTrackIds.add(candidate.id);
     matchedDetectionIds.add(candidate.index);
     active.push({ id: candidate.id, ...track });
@@ -1188,7 +1259,7 @@ function updateTracks(detections, config = state.config) {
       state.tracks.delete(id);
       continue;
     }
-    if (shouldKeepOccludedTrack(track)) {
+    if (shouldKeepOccludedTrack(track, config)) {
       if (!track.missingSince) track.missingSince = now;
       active.push(predictedTrackSnapshot(id, track, now, config));
     }
@@ -1220,6 +1291,7 @@ function updateTracks(detections, config = state.config) {
       visible: true,
       predicted: false,
     };
+    initializeFrontalTrackMemory(track, config);
     state.tracks.set(id, track);
     active.push({ id, ...track });
   });
@@ -1227,8 +1299,15 @@ function updateTracks(detections, config = state.config) {
   return active.filter((track) => trackInCountingZone(track, config));
 }
 
-function shouldKeepOccludedTrack(track) {
+function shouldKeepOccludedTrack(track, config = state.config) {
   if (!track || track.counted || track.phase === "counted" || track.phase === "exit" || track.phase === "ignore") return false;
+  if (isFrontalMode(config)) {
+    const missingFor = performance.now() - (track.lastSeen || performance.now());
+    return missingFor <= FRONTAL_OCCLUSION_GRACE_MS
+      && isEntryCandidate(track)
+      && frontalVisited(track, "MID")
+      && (track.apparentMotion === "APPROACHING" || Number(track.approachFrames || 0) > 0 || Number(track.proximityScore || 0) >= frontalProximityThreshold(config) - 0.12);
+  }
   return isEntryCandidate(track) && (track.phase === "crossedA" || track.crossedA);
 }
 
@@ -1246,6 +1325,7 @@ function predictedTrackSnapshot(id, track, now, config = state.config) {
     previousPoint: canPredict ? track.point : null,
     point,
     box: offsetBox(track.box, delta.x, delta.y),
+    edgeExit: detectFrameEdgeExit(offsetBox(track.box, delta.x, delta.y), config),
     visible: false,
     predicted: canPredict,
     missingFor: now - track.lastSeen,
@@ -1253,7 +1333,9 @@ function predictedTrackSnapshot(id, track, now, config = state.config) {
 }
 
 function canPredictTowardDestination(track, config = state.config) {
-  if (!track.velocity || !isEntryCandidate(track) || track.phase !== "crossedA") return false;
+  if (!track.velocity || !isEntryCandidate(track)) return false;
+  if (!isFrontalMode(config) && track.phase !== "crossedA") return false;
+  if (isFrontalMode(config) && !frontalVisited(track, "MID")) return false;
   const nextPoint = {
     x: track.point.x + track.velocity.x * TRACK_PREDICTION_MAX_MS,
     y: track.point.y + track.velocity.y * TRACK_PREDICTION_MAX_MS,
@@ -1270,7 +1352,268 @@ function offsetBox(box, deltaX, deltaY) {
   };
 }
 
+function initializeFrontalTrackMemory(track, config = state.config) {
+  if (!isFrontalMode(config)) return track;
+  const zone = frontalZone(track.point, config);
+  const proximityScore = frontalProximityScore(track, config);
+  track.firstZone = zone;
+  track.zone = zone;
+  track.zoneHistory = [zone];
+  track.crossedMid = false;
+  track.reachedNear = zone === "NEAR" && track.originValid;
+  track.proximityScore = proximityScore;
+  track.maxProximityScore = proximityScore;
+  track.initialProximityScore = proximityScore;
+  track.bboxGrowthRate = 0;
+  track.apparentMotion = "STABLE";
+  track.approachFrames = 0;
+  track.recedeFrames = 0;
+  track.edgeExit = detectFrameEdgeExit(track.box, config);
+  track.entryConfirmType = null;
+  return track;
+}
+
+function updateFrontalTrackMemory(track, context) {
+  const { previousPoint, previousBox, previousProximity, elapsedMs, config } = context;
+  if (!isFrontalMode(config)) return track;
+  if (!track.zoneHistory) initializeFrontalTrackMemory(track, config);
+
+  const crossings = previousPoint ? orderedCrossings(previousPoint, track.point, config) : [];
+  const previousZone = track.zone || (previousPoint ? frontalZone(previousPoint, config) : null);
+  const currentZone = frontalZone(track.point, config);
+  const growthRate = bboxGrowthRate(previousBox, track.box);
+  const proximityScore = frontalProximityScore(track, config, growthRate);
+  const motion = apparentDepthMotion({
+    previousPoint,
+    currentPoint: track.point,
+    previousBox,
+    currentBox: track.box,
+    previousProximity,
+    currentProximity: proximityScore,
+    elapsedMs,
+    config,
+  });
+
+  if (crossings.includes("A")) {
+    appendFrontalZone(track, "MID");
+    track.crossedA = true;
+    track.crossedMid = isEntryCandidate(track);
+  }
+  if (crossings.includes("B")) {
+    appendFrontalZone(track, "NEAR");
+    track.crossedB = true;
+    track.reachedNear = isEntryCandidate(track);
+  }
+  if (previousZone && previousZone !== currentZone && previousZone === "FAR" && currentZone === "NEAR") {
+    appendFrontalZone(track, "MID");
+    track.crossedMid = isEntryCandidate(track);
+  }
+  appendFrontalZone(track, currentZone);
+
+  track.zone = currentZone;
+  track.bboxGrowthRate = round(growthRate, 3);
+  track.proximityScore = round(proximityScore, 3);
+  track.maxProximityScore = round(Math.max(Number(track.maxProximityScore || 0), proximityScore), 3);
+  track.apparentMotion = motion;
+  track.approachFrames = motion === "APPROACHING" ? Number(track.approachFrames || 0) + 1 : (motion === "RECEDING" ? 0 : Number(track.approachFrames || 0));
+  track.recedeFrames = motion === "RECEDING" ? Number(track.recedeFrames || 0) + 1 : (motion === "APPROACHING" ? 0 : Number(track.recedeFrames || 0));
+  track.edgeExit = detectFrameEdgeExit(track.box, config);
+  return track;
+}
+
+function updateFrontalCount(tracks, config = state.config) {
+  tracks.forEach((track) => {
+    const stored = state.tracks.get(track.id);
+    if (!stored || stored.counted) return;
+    if (track.edgeExit && track.edgeExit !== "NONE") {
+      stored.edgeExit = track.edgeExit;
+    }
+    if (track.predicted) {
+      stored.predicted = true;
+      stored.missingFor = track.missingFor;
+    }
+
+    const decision = frontalEntryDecision(stored, track, config);
+    if (decision.count) {
+      stored.entryConfirmType = decision.type;
+      confirmTrackEntry(stored, {
+        ...track,
+        entryConfirmType: decision.type,
+        proximityScore: stored.proximityScore,
+        edgeExit: stored.edgeExit,
+        zoneHistory: stored.zoneHistory,
+        apparentMotion: stored.apparentMotion,
+      });
+      return;
+    }
+    if (decision.ignore) {
+      stored.phase = "ignore";
+      stored.ignoredEntry = true;
+      stored.ignoreReason = decision.reason;
+    }
+  });
+}
+
+function frontalEntryDecision(stored, track, config = state.config) {
+  if (!isFrontalMode(config)) return { count: false };
+  if (stored.ignoredEntry || stored.originStatus === "destination") {
+    return { count: false, ignore: true, reason: "ORIGIN_NEAR" };
+  }
+  if (!isEntryCandidate(stored)) {
+    return { count: false };
+  }
+
+  const zone = track.zone || stored.zone || frontalZone(track.point, config);
+  const threshold = frontalProximityThreshold(config);
+  const hasMid = Boolean(stored.crossedMid || frontalVisited(stored, "MID"));
+  const reachedNear = Boolean(stored.reachedNear || frontalVisited(stored, "NEAR") || zone === "NEAR");
+  const approaching = stored.apparentMotion === "APPROACHING" || Number(stored.approachFrames || 0) > 0;
+  const proximity = Math.max(Number(stored.proximityScore || 0), Number(stored.maxProximityScore || 0), Number(track.proximityScore || 0));
+  const grewEnough = Number(stored.bboxGrowthRate || 0) >= 0.025 || proximity - Number(stored.initialProximityScore || 0) >= 0.16;
+  const compatibleEdge = frontalEdgeCompatible(track, config) || frontalEdgeCompatible(stored, config);
+
+  if (hasMid && reachedNear && approaching) {
+    return { count: true, type: "ENTRY_FULL" };
+  }
+  if (hasMid && approaching && proximity >= threshold && compatibleEdge) {
+    return { count: true, type: "ENTRY_EDGE" };
+  }
+  if (hasMid && approaching && grewEnough && proximity >= threshold - FRONTAL_FAST_ENTRY_TOLERANCE && compatibleEdge) {
+    return { count: true, type: "ENTRY_FAST" };
+  }
+  if (hasMid && stored.apparentMotion === "RECEDING" && (zone === "FAR" || Number(stored.recedeFrames || 0) >= 2)) {
+    return { count: false, ignore: true, reason: "RETURNED" };
+  }
+  return { count: false };
+}
+
+function frontalZone(point, config = state.config) {
+  const progress = frontalDepthProgress(point, config);
+  if (progress < 0) return "FAR";
+  if (progress < 1) return "MID";
+  return "NEAR";
+}
+
+function frontalDepthProgress(point, config = state.config) {
+  if (!point) return 0;
+  const axisSize = axisPixelSize(config);
+  const axis = pointAxisPixel(point, config) / Math.max(1, axisSize);
+  const a = linePosition(config.lineA, config);
+  const b = linePosition(config.lineB, config);
+  const span = Math.max(Math.abs(b - a), Number(config.minLineSeparation || MIN_LINE_SEPARATION), 0.01);
+  return ((axis - a) * entryDirectionSign(config)) / span;
+}
+
+function frontalProximityScore(track, config = state.config, growthRate = 0) {
+  const width = els.camera.videoWidth || els.calibrationOverlay.width || 1;
+  const height = els.camera.videoHeight || els.calibrationOverlay.height || 1;
+  const box = track.box || { x: 0, y: 0, w: 0, h: 0 };
+  const heightScore = scale01(box.h / height, 0.18, 0.72);
+  const widthScore = scale01(box.w / width, 0.10, 0.54);
+  const areaScore = scale01(boxArea(box) / Math.max(1, width * height), 0.028, 0.32);
+  const depthScore = clamp(frontalDepthProgress(track.point, config));
+  const growthScore = scale01(growthRate, 0.015, 0.18);
+  const edgeBoost = detectFrameEdgeExit(box, config) !== "NONE" ? 0.06 : 0;
+  return round(clamp(
+    heightScore * 0.26
+    + widthScore * 0.15
+    + areaScore * 0.16
+    + depthScore * 0.33
+    + growthScore * 0.10
+    + edgeBoost,
+  ), 3);
+}
+
+function apparentDepthMotion(context) {
+  const { previousPoint, currentPoint, previousBox, currentBox, previousProximity, currentProximity, config } = context;
+  if (!previousPoint || !currentPoint || !previousBox || !currentBox) return "STABLE";
+  const depthDelta = frontalDepthProgress(currentPoint, config) - frontalDepthProgress(previousPoint, config);
+  const growthRate = bboxGrowthRate(previousBox, currentBox);
+  const proximityDelta = Number(currentProximity || 0) - Number(previousProximity || 0);
+  let approachEvidence = 0;
+  let recedeEvidence = 0;
+
+  if (depthDelta > 0.012) approachEvidence += 1;
+  if (depthDelta > 0.035) approachEvidence += 1;
+  if (growthRate > 0.025) approachEvidence += 1;
+  if (proximityDelta > 0.025) approachEvidence += 1;
+
+  if (depthDelta < -0.012) recedeEvidence += 1;
+  if (depthDelta < -0.035) recedeEvidence += 1;
+  if (growthRate < -0.035) recedeEvidence += 1;
+  if (proximityDelta < -0.035) recedeEvidence += 1;
+
+  if (approachEvidence >= 2 || (depthDelta > 0.02 && growthRate > -0.06)) return "APPROACHING";
+  if (recedeEvidence >= 2 || (depthDelta < -0.02 && growthRate < 0.04)) return "RECEDING";
+  return "STABLE";
+}
+
+function bboxGrowthRate(previousBox, currentBox) {
+  if (!previousBox || !currentBox) return 0;
+  const previousArea = Math.max(1, boxArea(previousBox));
+  return (boxArea(currentBox) - previousArea) / previousArea;
+}
+
+function boxArea(box) {
+  return Math.max(0, Number(box?.w || 0)) * Math.max(0, Number(box?.h || 0));
+}
+
+function detectFrameEdgeExit(box, config = state.config) {
+  if (!box) return "NONE";
+  const width = els.camera.videoWidth || els.calibrationOverlay.width || 1;
+  const height = els.camera.videoHeight || els.calibrationOverlay.height || 1;
+  const marginX = width * FRONTAL_EDGE_MARGIN;
+  const marginY = height * FRONTAL_EDGE_MARGIN;
+  const edges = [];
+  if (box.x <= marginX) edges.push("LEFT");
+  if (box.x + box.w >= width - marginX) edges.push("RIGHT");
+  if (entryDirectionSign(config) >= 0 && box.y + box.h >= height - marginY) edges.push("BOTTOM");
+  if (entryDirectionSign(config) < 0 && box.y <= marginY) edges.push("TOP");
+  return edges.length ? edges.join("+") : "NONE";
+}
+
+function frontalEdgeCompatible(track, config = state.config) {
+  const edge = track.edgeExit || detectFrameEdgeExit(track.box, config);
+  if (!edge || edge === "NONE") return false;
+  if (entryDirectionSign(config) < 0) return /LEFT|RIGHT|TOP/.test(edge);
+  return /LEFT|RIGHT|BOTTOM/.test(edge);
+}
+
+function appendFrontalZone(track, zone) {
+  if (!zone) return;
+  if (!Array.isArray(track.zoneHistory)) track.zoneHistory = [];
+  if (track.zoneHistory[track.zoneHistory.length - 1] !== zone) {
+    track.zoneHistory.push(zone);
+  }
+  if (track.zoneHistory.length > 8) {
+    track.zoneHistory = track.zoneHistory.slice(-8);
+  }
+}
+
+function frontalVisited(track, zone) {
+  return Array.isArray(track.zoneHistory) && track.zoneHistory.includes(zone);
+}
+
+function frontalZonePath(track) {
+  return Array.isArray(track.zoneHistory) && track.zoneHistory.length
+    ? track.zoneHistory.join("->")
+    : "--";
+}
+
+function frontalProximityThreshold(config = state.config) {
+  return clampNumber(config.entryProximityThreshold, 0.5, 0.9, DEFAULT_CONFIG.entryProximityThreshold);
+}
+
+function scale01(value, minimum, maximum) {
+  if (maximum <= minimum) return 0;
+  return clamp((Number(value || 0) - minimum) / (maximum - minimum));
+}
+
 function updateCount(tracks, config = state.config) {
+  if (isFrontalMode(config)) {
+    updateFrontalCount(tracks, config);
+    return;
+  }
   tracks.forEach((track) => {
     const stored = state.tracks.get(track.id);
     if (!stored || stored.counted || !track.previousPoint) return;
@@ -1333,6 +1676,12 @@ function registerEntry(track) {
     camera: CAMERA_NAME,
     event: "ENTRY",
     track_id: track.id,
+    counting_mode: state.config.countingMode || (isFrontalMode(state.config) ? "FRONTAL" : "LATERAL"),
+    confirmation_type: track.entryConfirmType || (isFrontalMode(state.config) ? "ENTRY_FULL" : "A_TO_B"),
+    proximity_score: Number.isFinite(Number(track.proximityScore)) ? round(track.proximityScore, 3) : null,
+    edge_exit: track.edgeExit || "NONE",
+    zone_path: Array.isArray(track.zoneHistory) ? track.zoneHistory.join("->") : "",
+    apparent_motion: track.apparentMotion || "",
     age_group: track.ageGroup || "SIN_DETERMINAR",
     age_confidence: Number(track.ageConfidence || 0),
     total_count: state.events.length + 1,
@@ -1749,6 +2098,13 @@ function pointOnDestinationSide(point, config = state.config) {
 }
 
 function classifyTrackOrigin(point, config = state.config) {
+  if (isFrontalMode(config)) {
+    const zone = frontalZone(point, config);
+    if (zone === "FAR") return "valid";
+    if (zone === "NEAR") return "destination";
+    if (frontalDepthProgress(point, config) <= 0.38) return "valid";
+    return "uncertain";
+  }
   if (pointStartedOnOriginSide(point, config)) return "valid";
   if (pointOnDestinationSide(point, config)) return "destination";
   return "uncertain";
@@ -1827,6 +2183,18 @@ function lineAt(axisPosition, config = draftConfig()) {
   return [{ x: position, y: bounds.top }, { x: position, y: bounds.bottom }];
 }
 
+function extendFrontalZones(config) {
+  const bounds = roiBounds(isRoi(config.roi) ? config.roi : DEFAULT_CONFIG.roi);
+  config.roi = [
+    { x: FRONTAL_EXTENDED_ROI[0].x, y: Math.min(bounds.top, FRONTAL_EXTENDED_ROI[0].y) },
+    { x: FRONTAL_EXTENDED_ROI[1].x, y: Math.min(bounds.top, FRONTAL_EXTENDED_ROI[1].y) },
+    { x: FRONTAL_EXTENDED_ROI[2].x, y: Math.max(bounds.bottom, FRONTAL_EXTENDED_ROI[2].y) },
+    { x: FRONTAL_EXTENDED_ROI[3].x, y: Math.max(bounds.bottom, FRONTAL_EXTENDED_ROI[3].y) },
+  ];
+  syncLineSpansToRoi(config);
+  return config;
+}
+
 function roiBounds(roi) {
   const xs = roi.map((point) => point.x);
   const ys = roi.map((point) => point.y);
@@ -1872,6 +2240,10 @@ function allowedDirections(orientation) {
   return DIRECTIONS_BY_ORIENTATION[normalizeOrientation(orientation)];
 }
 
+function isFrontalMode(config = state.config) {
+  return normalizeOrientation(config.lineOrientation) === "horizontal";
+}
+
 function normalizeDirection(value, orientation) {
   const options = allowedDirections(orientation);
   return options.includes(value) ? value : options[0];
@@ -1881,9 +2253,9 @@ function defaultLinePositions(orientation, direction) {
   const normalizedOrientation = normalizeOrientation(orientation);
   const normalizedDirection = normalizeDirection(direction, normalizedOrientation);
   if (normalizedOrientation === "horizontal") {
-    return normalizedDirection === "TOP_TO_BOTTOM" ? [0.32, 0.46] : [0.68, 0.54];
+    return normalizedDirection === "TOP_TO_BOTTOM" ? [0.36, 0.62] : [0.64, 0.38];
   }
-  return normalizedDirection === "RIGHT_TO_LEFT" ? [0.68, 0.54] : [0.32, 0.46];
+  return normalizedDirection === "RIGHT_TO_LEFT" ? [0.70, 0.54] : [0.30, 0.46];
 }
 
 function inferLineOrientation(config) {
@@ -1896,8 +2268,13 @@ function inferLineOrientation(config) {
 
 function updateCalibrationMetadata(config) {
   config.lineOrientation = normalizeOrientation(config.lineOrientation);
+  config.countingMode = isFrontalMode(config) ? "FRONTAL" : "LATERAL";
   config.entryDirection = normalizeDirection(config.entryDirection, config.lineOrientation);
   config.minLineSeparation = Number.isFinite(config.minLineSeparation) ? clamp(config.minLineSeparation) : MIN_LINE_SEPARATION;
+  config.entryProximityThreshold = clampNumber(config.entryProximityThreshold, 0.5, 0.9, DEFAULT_CONFIG.entryProximityThreshold);
+  if (!config.depthCalibration || typeof config.depthCalibration !== "object") {
+    config.depthCalibration = cloneConfig(DEFAULT_CONFIG.depthCalibration);
+  }
   syncLineSpansToRoi(config);
   config.lineAPosition = round(linePosition(config.lineA, config), 4);
   config.lineBPosition = round(linePosition(config.lineB, config), 4);
@@ -1973,6 +2350,16 @@ function applyFastCountingMigration(config, rawConfig) {
     const [aPosition, bPosition] = defaultLinePositions(config.lineOrientation, config.entryDirection);
     setLinePositions(config, aPosition, bPosition);
   }
+  if (isFrontalMode(config)) {
+    extendFrontalZones(config);
+    if (config.lineSeparation < 0.20) {
+      const [aPosition, bPosition] = defaultLinePositions(config.lineOrientation, config.entryDirection);
+      setLinePositions(config, aPosition, bPosition);
+    }
+    if (!Number.isFinite(Number(rawConfig.entryProximityThreshold))) {
+      config.entryProximityThreshold = DEFAULT_CONFIG.entryProximityThreshold;
+    }
+  }
   config.fastCountingVersion = FAST_COUNTING_VERSION;
   return true;
 }
@@ -2005,6 +2392,15 @@ function normalizeConfig(config, options = {}) {
   if (isLine(config.lineA)) normalized.lineA = config.lineA;
   if (isLine(config.lineB)) normalized.lineB = config.lineB;
   if (Number.isFinite(config.minLineSeparation)) normalized.minLineSeparation = config.minLineSeparation;
+  if (Number.isFinite(Number(config.entryProximityThreshold))) {
+    normalized.entryProximityThreshold = Number(config.entryProximityThreshold);
+  }
+  if (config.depthCalibration && typeof config.depthCalibration === "object") {
+    normalized.depthCalibration = {
+      ...DEFAULT_CONFIG.depthCalibration,
+      ...config.depthCalibration,
+    };
+  }
   if (config.calibrationId) normalized.calibrationId = config.calibrationId;
   if (config.sessionId) normalized.sessionId = config.sessionId;
   if (config.deviceId) normalized.deviceId = config.deviceId;
@@ -2038,6 +2434,10 @@ function setCalibrationOrientation(orientation) {
   const next = cloneConfig(draftConfig());
   next.lineOrientation = normalizeOrientation(orientation);
   next.entryDirection = normalizeDirection(next.entryDirection, next.lineOrientation);
+  if (isFrontalMode(next)) {
+    extendFrontalZones(next);
+    next.entryProximityThreshold = Number(next.entryProximityThreshold || DEFAULT_CONFIG.entryProximityThreshold);
+  }
   const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
   setLinePositions(next, aPosition, bPosition);
   state.calibrationDraft = next;
@@ -2052,6 +2452,9 @@ function setCalibrationOrientation(orientation) {
 function setCalibrationDirection(direction) {
   const next = cloneConfig(draftConfig());
   next.entryDirection = normalizeDirection(direction, next.lineOrientation);
+  if (isFrontalMode(next)) {
+    extendFrontalZones(next);
+  }
   const [aPosition, bPosition] = defaultLinePositions(next.lineOrientation, next.entryDirection);
   setLinePositions(next, aPosition, bPosition);
   state.calibrationDraft = next;
@@ -2097,6 +2500,9 @@ function calibrationDistanceLabel(config) {
     ? els.camera.videoHeight || els.calibrationOverlay.height || 1
     : els.camera.videoWidth || els.calibrationOverlay.width || 1;
   const pixels = Math.round(Math.abs(config.lineAPosition - config.lineBPosition) * axisPixels);
+  if (isFrontalMode(config)) {
+    return `Frontal: FAR/MID/NEAR · Separacion ${pixels}px · Prox ${Math.round(config.entryProximityThreshold * 100)}%`;
+  }
   return `Separacion: ${pixels}px · ${(Math.abs(config.lineAPosition - config.lineBPosition) * 100).toFixed(1)}%`;
 }
 
@@ -2116,6 +2522,7 @@ function setCalibrationStatus(message, kind = "ok") {
 
 function renderCalibrationControls() {
   const config = draftConfig();
+  const frontal = isFrontalMode(config);
   document.querySelectorAll("[data-orientation]").forEach((button) => {
     button.classList.toggle("active", button.dataset.orientation === config.lineOrientation);
   });
@@ -2129,6 +2536,15 @@ function renderCalibrationControls() {
   });
   if (els.testCalibration) {
     els.testCalibration.classList.toggle("active", state.calibrationProbe.active);
+  }
+  document.querySelectorAll("[data-frontal-control]").forEach((item) => {
+    item.hidden = !frontal;
+  });
+  if (els.proximityThreshold) {
+    els.proximityThreshold.value = String(config.entryProximityThreshold || DEFAULT_CONFIG.entryProximityThreshold);
+  }
+  if (els.proximityThresholdValue) {
+    els.proximityThresholdValue.textContent = `${Math.round((config.entryProximityThreshold || DEFAULT_CONFIG.entryProximityThreshold) * 100)}%`;
   }
   setCalibrationStatus(state.calibrationStatus || calibrationDistanceLabel(config), state.calibrationStatusKind || "ok");
 }
@@ -2277,6 +2693,32 @@ function updateCalibrationProbe(tracks) {
       originValid: true,
       ignoredEntry: false,
     };
+    if (isFrontalMode(config)) {
+      Object.assign(memory, {
+        ...track,
+        counted: Boolean(memory.counted || track.counted),
+        originStatus: memory.originStatus || track.originStatus,
+        originValid: Boolean(memory.originValid || track.originValid),
+        ignoredEntry: Boolean(memory.ignoredEntry || track.ignoredEntry),
+        phase: memory.phase || track.phase || "new",
+        zoneHistory: memory.zoneHistory || track.zoneHistory || [],
+        crossedMid: Boolean(memory.crossedMid || track.crossedMid),
+        reachedNear: Boolean(memory.reachedNear || track.reachedNear),
+        approachFrames: Math.max(Number(memory.approachFrames || 0), Number(track.approachFrames || 0)),
+        recedeFrames: Math.max(Number(memory.recedeFrames || 0), Number(track.recedeFrames || 0)),
+        maxProximityScore: Math.max(Number(memory.maxProximityScore || 0), Number(track.maxProximityScore || 0)),
+      });
+      const decision = frontalEntryDecision(memory, track, config);
+      if (!memory.counted && decision.count) {
+        memory.counted = true;
+        memory.phase = "counted";
+        memory.entryConfirmType = decision.type;
+        probeCount += 1;
+        state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now(), type: decision.type });
+      }
+      state.calibrationProbe.tracks.set(track.id, memory);
+      return;
+    }
     if (track.previousPoint) {
       memory.previousPoint = track.previousPoint;
       memory.point = track.point;
@@ -2301,6 +2743,9 @@ function drawOverlay(canvas, tracks, config = state.config, options = {}) {
   resizeCanvas(canvas, video.videoWidth, video.videoHeight);
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (isFrontalMode(config)) {
+    drawFrontalZones(ctx, canvas, config);
+  }
   drawRoi(ctx, config.roi, canvas);
   drawLine(ctx, config.lineA, canvas, "#15f070", "A", config);
   drawLine(ctx, config.lineB, canvas, "#f7bd31", "B", config);
@@ -2312,11 +2757,20 @@ function drawOverlay(canvas, tracks, config = state.config, options = {}) {
     ctx.strokeStyle = "#15f070";
     ctx.lineWidth = 3;
     ctx.strokeRect(track.box.x, track.box.y, track.box.w, track.box.h);
+    const labelHeight = isFrontalMode(config) ? 40 : 22;
+    const labelWidth = isFrontalMode(config) ? 150 : 72;
+    const labelTop = Math.max(0, track.box.y - labelHeight - 2);
     ctx.fillStyle = "rgba(1, 10, 5, 0.86)";
-    ctx.fillRect(track.box.x, Math.max(0, track.box.y - 24), 72, 22);
+    ctx.fillRect(track.box.x, labelTop, labelWidth, labelHeight);
     ctx.fillStyle = "#15f070";
-    ctx.font = "16px system-ui";
-    ctx.fillText(`ID ${track.id}`, track.box.x + 7, Math.max(17, track.box.y - 7));
+    ctx.font = "bold 14px system-ui";
+    ctx.fillText(`ID ${track.id}`, track.box.x + 7, labelTop + 16);
+    if (isFrontalMode(config)) {
+      ctx.font = "12px system-ui";
+      const prox = Math.round(Number(track.proximityScore || 0) * 100);
+      const motion = track.apparentMotion === "APPROACHING" ? "APPROACH" : track.apparentMotion === "RECEDING" ? "AWAY" : "STABLE";
+      ctx.fillText(`${motion} · PROX ${prox}%`, track.box.x + 7, labelTop + 32);
+    }
     ctx.beginPath();
     ctx.arc(track.point.x, track.point.y, 5, 0, Math.PI * 2);
     ctx.fill();
@@ -2344,6 +2798,40 @@ function drawLine(ctx, line, canvas, color, label) {
   ctx.fillText(label, a.x + 8, Math.max(18, a.y - 8));
 }
 
+function drawFrontalZones(ctx, canvas, config) {
+  const bounds = roiBounds(config.roi);
+  const left = bounds.left * canvas.width;
+  const right = bounds.right * canvas.width;
+  const top = bounds.top * canvas.height;
+  const bottom = bounds.bottom * canvas.height;
+  const yA = lineAxisMid(config.lineA, config) * canvas.height;
+  const yB = lineAxisMid(config.lineB, config) * canvas.height;
+  const sign = entryDirectionSign(config);
+  const farStart = sign >= 0 ? top : bottom;
+  const farEnd = yA;
+  const midStart = yA;
+  const midEnd = yB;
+  const nearStart = yB;
+  const nearEnd = sign >= 0 ? bottom : top;
+
+  ctx.save();
+  drawFrontalBand(ctx, left, right, farStart, farEnd, "rgba(108, 231, 255, 0.09)", "ZONA LEJANA");
+  drawFrontalBand(ctx, left, right, midStart, midEnd, "rgba(21, 240, 112, 0.09)", "ZONA MEDIA");
+  drawFrontalBand(ctx, left, right, nearStart, nearEnd, "rgba(247, 189, 49, 0.10)", "ZONA CERCANA");
+  ctx.restore();
+}
+
+function drawFrontalBand(ctx, left, right, y1, y2, fill, label) {
+  const top = Math.min(y1, y2);
+  const height = Math.abs(y2 - y1);
+  if (height < 4) return;
+  ctx.fillStyle = fill;
+  ctx.fillRect(left, top, right - left, height);
+  ctx.fillStyle = "rgba(234, 255, 241, 0.82)";
+  ctx.font = "bold 13px system-ui";
+  ctx.fillText(label, left + 10, top + Math.min(22, Math.max(15, height / 2)));
+}
+
 function drawCalibrationGuides(ctx, canvas, config) {
   const a = lineCenterPx(config.lineA, canvas);
   const b = lineCenterPx(config.lineB, canvas);
@@ -2361,9 +2849,9 @@ function drawCalibrationGuides(ctx, canvas, config) {
   ctx.fillText(isFrontal ? "A LEJOS" : "ORIGEN", clampPx(a.x - 34, canvas.width - 70), clampPx(a.y - 18, canvas.height - 18));
   ctx.fillText(isFrontal ? "B CERCA" : "DESTINO", clampPx(b.x - 38, canvas.width - 76), clampPx(b.y + 28, canvas.height - 14));
   ctx.fillStyle = "rgba(1, 8, 5, 0.72)";
-  ctx.fillRect(10, 10, isFrontal ? 250 : 210, 28);
+  ctx.fillRect(10, 10, isFrontal ? 315 : 210, 28);
   ctx.fillStyle = "#eafff1";
-  ctx.fillText(isFrontal ? "Frontal: A lejos -> B cerca" : "Entrada: A -> B", 22, 30);
+  ctx.fillText(isFrontal ? `Frontal: FAR -> MID -> NEAR · Prox ${Math.round(frontalProximityThreshold(config) * 100)}%` : "Entrada: A -> B", 22, 30);
   ctx.restore();
 }
 
@@ -2621,6 +3109,18 @@ function updateTrackDebugStats(tracks, visibleCount = state.debugStats.detectedP
 }
 
 function trackDebugText(track) {
+  if (isFrontalMode(state.config)) {
+    const edge = track.edgeExit && track.edgeExit !== "NONE" ? `EDGE ${track.edgeExit}` : "EDGE --";
+    const motion = track.apparentMotion || "STABLE";
+    const proximity = Math.round(Number(track.proximityScore || 0) * 100);
+    const stateLabel = track.counted
+      ? `COUNTED ${track.entryConfirmType || ""}`.trim()
+      : isIgnoredTrack(track)
+        ? `IGNORE ${track.ignoreReason || ""}`.trim()
+        : String(track.phase || "new").toUpperCase();
+    const visibility = track.predicted ? "OCULTO" : "VISIBLE";
+    return `ID ${track.id} ${frontalZonePath(track)} ${motion} PROX ${proximity}% ${edge} ${stateLabel} ${visibility}`;
+  }
   const originLabels = {
     valid: "ORIGEN OK",
     uncertain: "ORIGEN DUDOSO",
@@ -2896,6 +3396,12 @@ function buildEventsCsv() {
     "hora",
     "evento",
     "track_id",
+    "modo_conteo",
+    "confirmacion",
+    "proximidad",
+    "borde_salida",
+    "zonas",
+    "movimiento",
     "grupo_edad",
     "confianza_edad",
     "total_acumulado",
@@ -2911,6 +3417,12 @@ function buildEventsCsv() {
       formatClock(event.timestampMs),
       event.event || "ENTRY",
       event.track_id ?? "",
+      event.counting_mode || "",
+      event.confirmation_type || "",
+      event.proximity_score ?? "",
+      event.edge_exit || "",
+      event.zone_path || "",
+      event.apparent_motion || "",
       event.age_group || "SIN_DETERMINAR",
       event.age_confidence ?? "",
       event.total_count ?? "",
@@ -2978,18 +3490,18 @@ function buildReportPdf(summary) {
 
   pdf.addTable(
     "Detalle de entradas",
-    ["#", "Fecha", "Hora", "Track", "Edad", "Grupo", "Tam.", "Total"],
+    ["#", "Hora", "Track", "Conf.", "Prox", "Borde", "Zonas", "Total"],
     events.map((event, index) => [
       index + 1,
-      event.date || formatDate(event.dateKey || todayKey),
       formatClock(event.timestampMs),
       event.track_id ?? "",
-      event.age_group || "SIN_DETERMINAR",
-      event.group_id ?? "",
-      event.group_size ?? 1,
+      event.confirmation_type || "",
+      event.proximity_score === null || event.proximity_score === undefined ? "--" : `${Math.round(Number(event.proximity_score) * 100)}%`,
+      event.edge_exit || "NONE",
+      event.zone_path || "",
       event.total_count ?? index + 1,
     ]),
-    [34, 72, 58, 55, 138, 52, 45, 52],
+    [28, 50, 44, 78, 42, 58, 210, 42],
   );
 
   pdf.addTable(
@@ -3504,18 +4016,18 @@ function buildEventsTable(events) {
     ? events.map((event, index) => `
       <tr>
         <td>${index + 1}</td>
-        <td>${escapeHtml(event.date || formatDate(event.dateKey || todayKey))}</td>
         <td>${escapeHtml(formatClock(event.timestampMs))}</td>
         <td>${escapeHtml(event.track_id ?? "")}</td>
-        <td>${escapeHtml(event.age_group || "SIN_DETERMINAR")}</td>
-        <td>${escapeHtml(event.group_id ?? "")}</td>
-        <td>${escapeHtml(event.group_size ?? 1)}</td>
+        <td>${escapeHtml(event.confirmation_type || "")}</td>
+        <td>${event.proximity_score === null || event.proximity_score === undefined ? "--" : `${Math.round(Number(event.proximity_score) * 100)}%`}</td>
+        <td>${escapeHtml(event.edge_exit || "NONE")}</td>
+        <td>${escapeHtml(event.zone_path || "")}</td>
         <td>${escapeHtml(event.total_count ?? index + 1)}</td>
       </tr>
     `).join("")
     : '<tr><td colspan="8">Sin entradas todavia.</td></tr>';
   return `<table>
-    <thead><tr><th>#</th><th>Fecha</th><th>Hora</th><th>Track ID</th><th>Edad</th><th>Grupo ID</th><th>Tam. grupo</th><th>Total</th></tr></thead>
+    <thead><tr><th>#</th><th>Hora</th><th>Track ID</th><th>Confirmacion</th><th>Prox.</th><th>Borde</th><th>Zonas</th><th>Total</th></tr></thead>
     <tbody>${body}</tbody>
   </table>`;
 }
@@ -3735,6 +4247,12 @@ function pointInPolygon(point, polygon) {
 function trackInCountingZone(track, config = state.config) {
   if (pointInPolygon(track.point, config.roi)) return true;
   if (pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE)) return true;
+  if (isFrontalMode(config)
+    && isEntryCandidate(track)
+    && frontalVisited(track, "MID")
+    && (frontalEdgeCompatible(track, config) || Number(track.proximityScore || 0) >= frontalProximityThreshold(config) - 0.12)) {
+    return true;
+  }
   if (track.previousPoint && (crossedLineAxis(track.previousPoint, track.point, config.lineA, config)
     || crossedLineAxis(track.previousPoint, track.point, config.lineB, config))) {
     return pointInRoiBounds(track.previousPoint, config.roi, ROI_EDGE_TOLERANCE)
@@ -3833,6 +4351,12 @@ function normalizeEvents(events) {
       ...event,
       timestampMs: Number(event.timestampMs || Date.parse(event.timestamp || new Date())),
       total_count: Number(event.total_count || index + 1),
+      counting_mode: event.counting_mode || "",
+      confirmation_type: event.confirmation_type || "",
+      proximity_score: Number.isFinite(Number(event.proximity_score)) ? Number(event.proximity_score) : null,
+      edge_exit: event.edge_exit || "NONE",
+      zone_path: event.zone_path || "",
+      apparent_motion: event.apparent_motion || "",
       age_group: event.age_group || "SIN_DETERMINAR",
       age_confidence: Number(event.age_confidence || 0),
       group_id: event.group_id || null,
@@ -3871,6 +4395,12 @@ function createLegacyEvents(count, dateKey) {
       camera: CAMERA_NAME,
       event: "ENTRY",
       track_id: null,
+      counting_mode: "LEGACY",
+      confirmation_type: "LEGACY",
+      proximity_score: null,
+      edge_exit: "NONE",
+      zone_path: "",
+      apparent_motion: "",
       age_group: "SIN_DETERMINAR",
       age_confidence: 0,
       total_count: index + 1,

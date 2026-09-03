@@ -530,6 +530,10 @@ canvas {
   line-height: 1.35;
 }
 
+.frontal-only[hidden] {
+  display: none;
+}
+
 .camera-actions {
   display: grid;
   gap: 8px;

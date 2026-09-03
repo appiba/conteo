@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app-fast-count-20260902.js?v=pdf-report-20260902"></script>
+  <script defer src="./app-fast-count-20260902.js?v=frontal-proximity-20260903"></script>
 </head>
 <body>
   <main class="shell">
@@ -156,6 +156,15 @@
               <button data-direction="TOP_TO_BOTTOM" type="button">Lejos → Cerca</button>
               <button data-direction="BOTTOM_TO_TOP" type="button">Cerca → Lejos</button>
             </div>
+          </div>
+          <label class="range-field frontal-only" data-frontal-control>
+            <span>Umbral proximidad <strong id="proximityThresholdValue">66%</strong></span>
+            <input id="proximityThreshold" type="range" min="0.50" max="0.90" step="0.01" value="0.66">
+            <small>Confirma entradas frontales si la persona se acerca y sale por un borde cercano.</small>
+          </label>
+          <div class="camera-actions frontal-only" data-frontal-control>
+            <button id="calibrateDepth" type="button">Calibrar profundidad</button>
+            <button id="extendFrontalZones" type="button">Extender zonas al borde</button>
           </div>
           <div class="calibration-status" id="calibrationStatus">Ajusta A, B o Zona y guarda.</div>
         </section>
