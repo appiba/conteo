@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script defer src="./app-fast-count-20260902.js?v=frontal-proximity-20260903"></script>
+  <script defer src="./app-fast-count-20260902.js?v=bidirectional-flow-20260903"></script>
 </head>
 <body>
   <main class="shell">
@@ -69,11 +69,15 @@
             <strong id="entryCandidateCount">0</strong>
           </div>
           <div>
+            <span>Candidatos salida</span>
+            <strong id="exitCandidateCount">0</strong>
+          </div>
+          <div>
             <span>Ignorados direccion</span>
             <strong id="ignoredTrackCount">0</strong>
           </div>
           <div>
-            <span>Entradas confirmadas</span>
+            <span>Eventos confirmados</span>
             <strong id="entriesConfirmedCount">0</strong>
           </div>
           <div class="track-debug-card">
@@ -83,9 +87,40 @@
         </section>
 
         <section class="counter-card">
-          <span class="label">Ingresos hoy</span>
+          <span class="label" id="countLabel">Ingresos hoy</span>
           <strong id="countValue">0</strong>
           <span class="small" id="todayLabel">--</span>
+          <div class="counter-breakdown" id="counterBreakdown">
+            <article>
+              <span>Ingresos</span>
+              <strong id="entryTotalValue">0</strong>
+            </article>
+            <article>
+              <span>Salidas</span>
+              <strong id="exitTotalValue">0</strong>
+            </article>
+            <article>
+              <span>Flujo</span>
+              <strong id="flowTotalValue">0</strong>
+            </article>
+            <article>
+              <span>Balance</span>
+              <strong id="balanceValue">0</strong>
+            </article>
+            <article class="occupancy-card" id="occupancyCard" hidden>
+              <span>Ocup. estimada</span>
+              <strong id="occupancyValue">0</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="quick-mode-card" aria-label="Modo de conteo">
+          <span>Modo de conteo</span>
+          <div class="segmented count-mode-grid">
+            <button class="active" data-quick-count-mode="ENTRY_ONLY" type="button">Ingresos</button>
+            <button data-quick-count-mode="EXIT_ONLY" type="button">Salidas</button>
+            <button data-quick-count-mode="BIDIRECTIONAL" type="button">Mixto</button>
+          </div>
         </section>
 
         <div class="actions">
@@ -156,6 +191,24 @@
               <button data-direction="TOP_TO_BOTTOM" type="button">Lejos → Cerca</button>
               <button data-direction="BOTTOM_TO_TOP" type="button">Cerca → Lejos</button>
             </div>
+          </div>
+          <div class="calibration-group">
+            <span>Modo de conteo</span>
+            <div class="segmented count-mode-grid">
+              <button class="active" data-count-mode="ENTRY_ONLY" type="button">Ingresos</button>
+              <button data-count-mode="EXIT_ONLY" type="button">Salidas</button>
+              <button data-count-mode="BIDIRECTIONAL" type="button">Mixto</button>
+            </div>
+          </div>
+          <div class="calibration-group occupancy-settings">
+            <label class="toggle-field">
+              <input id="occupancyEnabled" type="checkbox">
+              <span>Usar ocupacion estimada</span>
+            </label>
+            <label class="number-field">
+              <span>Ocupacion inicial</span>
+              <input id="initialOccupancy" type="number" min="0" inputmode="numeric" value="0">
+            </label>
           </div>
           <label class="range-field frontal-only" data-frontal-control>
             <span>Umbral proximidad <strong id="proximityThresholdValue">66%</strong></span>
@@ -298,7 +351,7 @@
         <section class="history-charts" aria-label="Graficos del historial">
           <article class="chart-card">
             <div class="chart-title">
-              <span>Ingresos por hora</span>
+              <span>Flujo por hora</span>
               <small>Dia actual</small>
             </div>
             <div class="bar-chart" id="hourlyChart"></div>

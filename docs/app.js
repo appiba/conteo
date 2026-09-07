@@ -19,7 +19,12 @@ const CAMERA_CONFIG_FIELDS = [
   "cameraDeviceId",
 ];
 
-const FAST_COUNTING_VERSION = "frontal-proximity-20260903";
+const FAST_COUNTING_VERSION = "bidirectional-flow-20260903";
+const COUNT_MODES = {
+  ENTRY_ONLY: "ENTRY_ONLY",
+  EXIT_ONLY: "EXIT_ONLY",
+  BIDIRECTIONAL: "BIDIRECTIONAL",
+};
 
 const DEFAULT_CONFIG = {
   lineA: [{ x: 0.30, y: 0.03 }, { x: 0.30, y: 0.99 }],
@@ -27,6 +32,7 @@ const DEFAULT_CONFIG = {
   roi: [{ x: 0.01, y: 0.03 }, { x: 0.99, y: 0.03 }, { x: 0.99, y: 0.99 }, { x: 0.01, y: 0.99 }],
   lineOrientation: "vertical",
   countingMode: "LATERAL",
+  countMode: COUNT_MODES.ENTRY_ONLY,
   entryDirection: "LEFT_TO_RIGHT",
   lineAPosition: 0.30,
   lineBPosition: 0.46,
@@ -39,6 +45,10 @@ const DEFAULT_CONFIG = {
     midLabel: "aprox. 2 m",
     nearLabel: "aprox. 1 m",
   },
+  occupancyEnabled: false,
+  initialOccupancy: 0,
+  pointId: "POINT_01",
+  pointRole: "ENTRY",
   fastCountingVersion: FAST_COUNTING_VERSION,
   calibrationId: null,
   sessionId: null,
@@ -73,7 +83,7 @@ const REPORT_TIMEZONE = "America/Guayaquil";
 const TIME_BUCKET_MINUTES = 60;
 const LIVE_RATE_WINDOW_MINUTES = 5;
 const GROUP_WINDOW_SECONDS = 2;
-const REPORT_BUILD_VERSION = "frontal-proximity-20260903";
+const REPORT_BUILD_VERSION = "bidirectional-flow-20260903";
 const CAMERA_NAME = "ENTRADA_01";
 const MIN_LINE_SEPARATION = 0.04;
 const CAMERA_START_TIMEOUT_MS = 25000;
@@ -120,8 +130,10 @@ const state = {
     detectedPersons: 0,
     activeTracks: 0,
     entryCandidates: 0,
+    exitCandidates: 0,
     ignoredTracks: 0,
     entriesConfirmed: 0,
+    exitsConfirmed: 0,
     trackRows: [],
     last1Minute: 0,
     last5Minutes: 0,
@@ -148,10 +160,18 @@ const els = {
   copyAppLink: document.querySelector("#copyAppLink"),
   cameraHelpText: document.querySelector("#cameraHelpText"),
   calibrationEmpty: document.querySelector("#calibrationEmpty"),
+  countLabel: document.querySelector("#countLabel"),
   countValue: document.querySelector("#countValue"),
+  entryTotalValue: document.querySelector("#entryTotalValue"),
+  exitTotalValue: document.querySelector("#exitTotalValue"),
+  flowTotalValue: document.querySelector("#flowTotalValue"),
+  balanceValue: document.querySelector("#balanceValue"),
+  occupancyCard: document.querySelector("#occupancyCard"),
+  occupancyValue: document.querySelector("#occupancyValue"),
   detectedCount: document.querySelector("#detectedCount"),
   activeTrackCount: document.querySelector("#activeTrackCount"),
   entryCandidateCount: document.querySelector("#entryCandidateCount"),
+  exitCandidateCount: document.querySelector("#exitCandidateCount"),
   ignoredTrackCount: document.querySelector("#ignoredTrackCount"),
   entriesConfirmedCount: document.querySelector("#entriesConfirmedCount"),
   trackDebugList: document.querySelector("#trackDebugList"),
@@ -194,6 +214,8 @@ const els = {
   proximityThresholdValue: document.querySelector("#proximityThresholdValue"),
   calibrateDepth: document.querySelector("#calibrateDepth"),
   extendFrontalZones: document.querySelector("#extendFrontalZones"),
+  occupancyEnabled: document.querySelector("#occupancyEnabled"),
+  initialOccupancy: document.querySelector("#initialOccupancy"),
   calibrationStatus: document.querySelector("#calibrationStatus"),
   cameraDevice: document.querySelector("#cameraDevice"),
   cameraResolution: document.querySelector("#cameraResolution"),
@@ -254,6 +276,7 @@ function wireUi() {
     state.realCount = 0;
     state.tracks.clear();
     state.debugStats.entriesConfirmed = 0;
+    state.debugStats.exitsConfirmed = 0;
     if (state.running) startSession(false);
     saveState();
     renderAll();
@@ -431,6 +454,38 @@ function wireUi() {
       setCalibrationDirection(button.dataset.direction);
     });
   });
+
+  document.querySelectorAll("[data-count-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setCalibrationCountMode(button.dataset.countMode);
+    });
+  });
+
+  document.querySelectorAll("[data-quick-count-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setQuickCountMode(button.dataset.quickCountMode);
+    });
+  });
+
+  if (els.occupancyEnabled) {
+    els.occupancyEnabled.addEventListener("change", () => {
+      ensureCalibrationDraft();
+      state.calibrationDraft.occupancyEnabled = Boolean(els.occupancyEnabled.checked);
+      updateCalibrationMetadata(state.calibrationDraft);
+      setCalibrationStatus("Modo de ocupacion ajustado. Presiona Guardar.", "warning");
+      renderAll();
+    });
+  }
+
+  if (els.initialOccupancy) {
+    els.initialOccupancy.addEventListener("input", () => {
+      ensureCalibrationDraft();
+      state.calibrationDraft.initialOccupancy = Math.max(0, Math.round(Number(els.initialOccupancy.value || 0)));
+      updateCalibrationMetadata(state.calibrationDraft);
+      setCalibrationStatus("Ocupacion inicial ajustada. Presiona Guardar.", "warning");
+      renderAll();
+    });
+  }
 
   document.querySelectorAll(".tab").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
@@ -1270,7 +1325,7 @@ function updateTracks(detections, config = state.config) {
     const point = bottomCenter(detection.box);
     const id = state.nextTrackId++;
     const originStatus = classifyTrackOrigin(point, config);
-    const ignoredEntry = originStatus === "destination";
+    const ignoredEntry = originStatus === "destination" && normalizeCountMode(config.countMode) === COUNT_MODES.ENTRY_ONLY;
     const track = {
       firstPoint: point,
       point,
@@ -1282,8 +1337,12 @@ function updateTracks(detections, config = state.config) {
       counted: false,
       crossedA: false,
       crossedB: false,
+      candidateDirection: null,
+      lastCountedEvent: null,
       originStatus,
       originValid: originStatus === "valid",
+      entryOriginValid: originStatus === "valid",
+      exitOriginValid: originStatus === "destination",
       ignoredEntry,
       lastDirection: "none",
       lastSeen: now,
@@ -1300,15 +1359,17 @@ function updateTracks(detections, config = state.config) {
 }
 
 function shouldKeepOccludedTrack(track, config = state.config) {
-  if (!track || track.counted || track.phase === "counted" || track.phase === "exit" || track.phase === "ignore") return false;
+  if (!track || track.counted || track.phase === "ignore") return false;
   if (isFrontalMode(config)) {
     const missingFor = performance.now() - (track.lastSeen || performance.now());
-    return missingFor <= FRONTAL_OCCLUSION_GRACE_MS
-      && isEntryCandidate(track)
-      && frontalVisited(track, "MID")
+    const entryCandidate = isEntryCandidate(track) && frontalVisited(track, "MID")
       && (track.apparentMotion === "APPROACHING" || Number(track.approachFrames || 0) > 0 || Number(track.proximityScore || 0) >= frontalProximityThreshold(config) - 0.12);
+    const exitCandidate = isExitCandidate(track, config) && frontalVisited(track, "MID")
+      && (track.apparentMotion === "RECEDING" || Number(track.recedeFrames || 0) > 0 || Number(track.proximityScore || 1) <= frontalProximityThreshold(config));
+    return missingFor <= FRONTAL_OCCLUSION_GRACE_MS
+      && (entryCandidate || exitCandidate);
   }
-  return isEntryCandidate(track) && (track.phase === "crossedA" || track.crossedA);
+  return Boolean(track.candidateDirection) || (isEntryCandidate(track) && track.crossedA) || (isExitCandidate(track, config) && track.crossedB);
 }
 
 function predictedTrackSnapshot(id, track, now, config = state.config) {
@@ -1333,14 +1394,17 @@ function predictedTrackSnapshot(id, track, now, config = state.config) {
 }
 
 function canPredictTowardDestination(track, config = state.config) {
-  if (!track.velocity || !isEntryCandidate(track)) return false;
-  if (!isFrontalMode(config) && track.phase !== "crossedA") return false;
+  if (!track.velocity) return false;
+  const direction = track.candidateDirection || (track.lastCountedEvent === "ENTRY" ? "EXIT" : "ENTRY");
+  if (direction === "ENTRY" && !isEntryCandidate(track)) return false;
+  if (direction === "EXIT" && !isExitCandidate(track, config)) return false;
+  if (!isFrontalMode(config) && !track.candidateDirection) return false;
   if (isFrontalMode(config) && !frontalVisited(track, "MID")) return false;
   const nextPoint = {
     x: track.point.x + track.velocity.x * TRACK_PREDICTION_MAX_MS,
     y: track.point.y + track.velocity.y * TRACK_PREDICTION_MAX_MS,
   };
-  return movingInEntryDirection(track.point, nextPoint, config);
+  return movingInEventDirection(track.point, nextPoint, direction, config);
 }
 
 function offsetBox(box, deltaX, deltaY) {
@@ -1359,10 +1423,12 @@ function initializeFrontalTrackMemory(track, config = state.config) {
   track.firstZone = zone;
   track.zone = zone;
   track.zoneHistory = [zone];
-  track.crossedMid = false;
-  track.reachedNear = zone === "NEAR" && track.originValid;
+  track.crossedMid = zone === "MID";
+  track.reachedFar = zone === "FAR";
+  track.reachedNear = zone === "NEAR";
   track.proximityScore = proximityScore;
   track.maxProximityScore = proximityScore;
+  track.minProximityScore = proximityScore;
   track.initialProximityScore = proximityScore;
   track.bboxGrowthRate = 0;
   track.apparentMotion = "STABLE";
@@ -1397,23 +1463,30 @@ function updateFrontalTrackMemory(track, context) {
   if (crossings.includes("A")) {
     appendFrontalZone(track, "MID");
     track.crossedA = true;
-    track.crossedMid = isEntryCandidate(track);
+    track.crossedMid = true;
   }
   if (crossings.includes("B")) {
     appendFrontalZone(track, "NEAR");
     track.crossedB = true;
-    track.reachedNear = isEntryCandidate(track);
+    track.reachedNear = true;
   }
   if (previousZone && previousZone !== currentZone && previousZone === "FAR" && currentZone === "NEAR") {
     appendFrontalZone(track, "MID");
-    track.crossedMid = isEntryCandidate(track);
+    track.crossedMid = true;
+  }
+  if (previousZone && previousZone !== currentZone && previousZone === "NEAR" && currentZone === "FAR") {
+    appendFrontalZone(track, "MID");
+    track.crossedMid = true;
   }
   appendFrontalZone(track, currentZone);
 
   track.zone = currentZone;
+  track.reachedFar = Boolean(track.reachedFar || currentZone === "FAR" || frontalVisited(track, "FAR"));
+  track.reachedNear = Boolean(track.reachedNear || currentZone === "NEAR" || frontalVisited(track, "NEAR"));
   track.bboxGrowthRate = round(growthRate, 3);
   track.proximityScore = round(proximityScore, 3);
   track.maxProximityScore = round(Math.max(Number(track.maxProximityScore || 0), proximityScore), 3);
+  track.minProximityScore = round(Math.min(Number(track.minProximityScore ?? proximityScore), proximityScore), 3);
   track.apparentMotion = motion;
   track.approachFrames = motion === "APPROACHING" ? Number(track.approachFrames || 0) + 1 : (motion === "RECEDING" ? 0 : Number(track.approachFrames || 0));
   track.recedeFrames = motion === "RECEDING" ? Number(track.recedeFrames || 0) + 1 : (motion === "APPROACHING" ? 0 : Number(track.recedeFrames || 0));
@@ -1424,7 +1497,7 @@ function updateFrontalTrackMemory(track, context) {
 function updateFrontalCount(tracks, config = state.config) {
   tracks.forEach((track) => {
     const stored = state.tracks.get(track.id);
-    if (!stored || stored.counted) return;
+    if (!stored) return;
     if (track.edgeExit && track.edgeExit !== "NONE") {
       stored.edgeExit = track.edgeExit;
     }
@@ -1432,18 +1505,20 @@ function updateFrontalCount(tracks, config = state.config) {
       stored.predicted = true;
       stored.missingFor = track.missingFor;
     }
+    rearmFrontalJourneyIfNeeded(stored, track, config);
+    if (stored.counted) return;
 
-    const decision = frontalEntryDecision(stored, track, config);
+    const decision = chooseFrontalDecision(stored, track, config);
     if (decision.count) {
-      stored.entryConfirmType = decision.type;
-      confirmTrackEntry(stored, {
+      stored.eventConfirmType = decision.type;
+      confirmTrackEvent(stored, {
         ...track,
-        entryConfirmType: decision.type,
+        eventConfirmType: decision.type,
         proximityScore: stored.proximityScore,
         edgeExit: stored.edgeExit,
         zoneHistory: stored.zoneHistory,
         apparentMotion: stored.apparentMotion,
-      });
+      }, decision.event, decision.type);
       return;
     }
     if (decision.ignore) {
@@ -1454,9 +1529,25 @@ function updateFrontalCount(tracks, config = state.config) {
   });
 }
 
+function chooseFrontalDecision(stored, track, config = state.config) {
+  const entryDecision = countModeAllows("ENTRY", config) ? frontalEntryDecision(stored, track, config) : { count: false };
+  const exitDecision = countModeAllows("EXIT", config) ? frontalExitDecision(stored, track, config) : { count: false };
+  if (entryDecision.count && exitDecision.count) {
+    return stored.apparentMotion === "RECEDING" ? exitDecision : entryDecision;
+  }
+  if (entryDecision.count) return entryDecision;
+  if (exitDecision.count) return exitDecision;
+  if (entryDecision.ignore) return entryDecision;
+  if (exitDecision.ignore) return exitDecision;
+  return { count: false };
+}
+
 function frontalEntryDecision(stored, track, config = state.config) {
   if (!isFrontalMode(config)) return { count: false };
-  if (stored.ignoredEntry || stored.originStatus === "destination") {
+  if (stored.originStatus === "destination") {
+    return { count: false, ignore: !countModeAllows("EXIT", config), reason: "ORIGIN_NEAR" };
+  }
+  if (stored.ignoredEntry) {
     return { count: false, ignore: true, reason: "ORIGIN_NEAR" };
   }
   if (!isEntryCandidate(stored)) {
@@ -1473,18 +1564,77 @@ function frontalEntryDecision(stored, track, config = state.config) {
   const compatibleEdge = frontalEdgeCompatible(track, config) || frontalEdgeCompatible(stored, config);
 
   if (hasMid && reachedNear && approaching) {
-    return { count: true, type: "ENTRY_FULL" };
+    return { count: true, event: "ENTRY", type: "ENTRY_FULL" };
   }
   if (hasMid && approaching && proximity >= threshold && compatibleEdge) {
-    return { count: true, type: "ENTRY_EDGE" };
+    return { count: true, event: "ENTRY", type: "ENTRY_EDGE" };
   }
   if (hasMid && approaching && grewEnough && proximity >= threshold - FRONTAL_FAST_ENTRY_TOLERANCE && compatibleEdge) {
-    return { count: true, type: "ENTRY_FAST" };
+    return { count: true, event: "ENTRY", type: "ENTRY_FAST" };
   }
   if (hasMid && stored.apparentMotion === "RECEDING" && (zone === "FAR" || Number(stored.recedeFrames || 0) >= 2)) {
     return { count: false, ignore: true, reason: "RETURNED" };
   }
   return { count: false };
+}
+
+function frontalExitDecision(stored, track, config = state.config) {
+  if (!isFrontalMode(config)) return { count: false };
+  if (!isExitCandidate(stored, config)) return { count: false };
+
+  const zone = track.zone || stored.zone || frontalZone(track.point, config);
+  const threshold = frontalProximityThreshold(config);
+  const hasMid = Boolean(stored.crossedMid || frontalVisited(stored, "MID"));
+  const reachedFar = Boolean(stored.reachedFar || frontalVisited(stored, "FAR") || zone === "FAR");
+  const receding = stored.apparentMotion === "RECEDING" || Number(stored.recedeFrames || 0) > 0;
+  const proximity = Math.min(Number(stored.proximityScore || 1), Number(stored.minProximityScore ?? 1), Number(track.proximityScore || 1));
+  const shrankEnough = Number(stored.bboxGrowthRate || 0) <= -0.025 || Number(stored.initialProximityScore || 0) - proximity >= 0.14;
+  const farEdge = frontalFarEdgeCompatible(track, config) || frontalFarEdgeCompatible(stored, config);
+
+  if (hasMid && reachedFar && receding) {
+    return { count: true, event: "EXIT", type: "EXIT_FULL" };
+  }
+  if (hasMid && receding && (shrankEnough || proximity <= threshold - 0.16) && farEdge) {
+    return { count: true, event: "EXIT", type: "EXIT_EDGE" };
+  }
+  if (hasMid && stored.apparentMotion === "APPROACHING" && (zone === "NEAR" || Number(stored.approachFrames || 0) >= 2)) {
+    return { count: false, ignore: true, reason: "RETURNED_EXIT" };
+  }
+  return { count: false };
+}
+
+function rearmFrontalJourneyIfNeeded(stored, track, config = state.config) {
+  if (!stored.counted || !stored.lastCountedEvent) return;
+  const zone = track.zone || stored.zone || frontalZone(track.point, config);
+  if (stored.lastCountedEvent === "ENTRY" && isExitCandidate(stored, config)) {
+    if (zone === "NEAR" || stored.apparentMotion === "RECEDING" || Number(stored.recedeFrames || 0) > 0) {
+      resetTrackJourney(stored, "EXIT");
+      resetFrontalJourneyMemory(stored, "NEAR");
+    }
+  } else if (stored.lastCountedEvent === "EXIT") {
+    if (zone === "FAR" || stored.apparentMotion === "APPROACHING" || Number(stored.approachFrames || 0) > 0) {
+      resetTrackJourney(stored, "ENTRY");
+      resetFrontalJourneyMemory(stored, "FAR");
+    }
+  }
+}
+
+function resetFrontalJourneyMemory(track, zone) {
+  const currentZone = zone || track.zone || "MID";
+  const proximity = Number(track.proximityScore || 0);
+  track.firstZone = currentZone;
+  track.zoneHistory = [currentZone];
+  track.crossedMid = currentZone === "MID";
+  track.reachedFar = currentZone === "FAR";
+  track.reachedNear = currentZone === "NEAR";
+  track.initialProximityScore = proximity;
+  track.maxProximityScore = proximity;
+  track.minProximityScore = proximity;
+  track.approachFrames = 0;
+  track.recedeFrames = 0;
+  track.entryOriginValid = currentZone === "FAR";
+  track.exitOriginValid = currentZone === "NEAR";
+  track.originStatus = currentZone === "FAR" ? "valid" : currentZone === "NEAR" ? "destination" : "uncertain";
 }
 
 function frontalZone(point, config = state.config) {
@@ -1567,8 +1717,8 @@ function detectFrameEdgeExit(box, config = state.config) {
   const edges = [];
   if (box.x <= marginX) edges.push("LEFT");
   if (box.x + box.w >= width - marginX) edges.push("RIGHT");
-  if (entryDirectionSign(config) >= 0 && box.y + box.h >= height - marginY) edges.push("BOTTOM");
-  if (entryDirectionSign(config) < 0 && box.y <= marginY) edges.push("TOP");
+  if (box.y <= marginY) edges.push("TOP");
+  if (box.y + box.h >= height - marginY) edges.push("BOTTOM");
   return edges.length ? edges.join("+") : "NONE";
 }
 
@@ -1577,6 +1727,13 @@ function frontalEdgeCompatible(track, config = state.config) {
   if (!edge || edge === "NONE") return false;
   if (entryDirectionSign(config) < 0) return /LEFT|RIGHT|TOP/.test(edge);
   return /LEFT|RIGHT|BOTTOM/.test(edge);
+}
+
+function frontalFarEdgeCompatible(track, config = state.config) {
+  const edge = track.edgeExit || detectFrameEdgeExit(track.box, config);
+  if (!edge || edge === "NONE") return false;
+  if (entryDirectionSign(config) < 0) return /LEFT|RIGHT|BOTTOM/.test(edge);
+  return /LEFT|RIGHT|TOP/.test(edge);
 }
 
 function appendFrontalZone(track, zone) {
@@ -1616,55 +1773,219 @@ function updateCount(tracks, config = state.config) {
   }
   tracks.forEach((track) => {
     const stored = state.tracks.get(track.id);
-    if (!stored || stored.counted || !track.previousPoint) return;
+    if (!stored || !track.previousPoint) return;
 
     let countedThisTrack = false;
     orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
       if (countedThisTrack) return;
-      maybePromoteUncertainOrigin(stored, track, crossing, config);
       console.debug(`Track ${track.id} crossed ${crossing}`);
-      if (shouldCountLateEntry(stored, track, crossing, config)) {
-        confirmTrackEntry(stored, track);
-        countedThisTrack = true;
-        return;
-      }
-      if (applyCrossing(stored, crossing, config, track)) {
-        confirmTrackEntry(stored, track);
+      if (applyDirectionalCrossing(stored, crossing, config, track)) {
         countedThisTrack = true;
       }
     });
 
-    if (!countedThisTrack && shouldCompleteEdgeEntry(stored, track, config)) {
-      confirmTrackEntry(stored, track);
+    if (!countedThisTrack && shouldCompleteEdgeJourney(stored, track, config)) {
+      countedThisTrack = true;
     }
   });
 }
 
+function applyDirectionalCrossing(track, crossing, config = state.config, movementTrack = track) {
+  if (!movementTrack.previousPoint || !movementTrack.point) return false;
+  const eventDirection = movementEventDirection(movementTrack.previousPoint, movementTrack.point, config);
+  if (!eventDirection) return false;
+  const firstLine = journeyFirstLine(eventDirection);
+  const secondLine = journeySecondLine(eventDirection);
+
+  if (track.counted) {
+    if (eventDirection !== track.lastCountedEvent && crossing === firstLine && hasEventOriginEvidence(track, movementTrack, eventDirection, config)) {
+      startTrackJourney(track, eventDirection, crossing);
+    }
+    return false;
+  }
+
+  if (track.phase === "ignore") return false;
+
+  if (track.phase === "new" || !track.candidateDirection) {
+    if (crossing === secondLine && shouldCountLateJourney(track, movementTrack, eventDirection, config)) {
+      return confirmTrackEvent(track, movementTrack, eventDirection, `${journeyFirstLine(eventDirection)}_TO_${journeySecondLine(eventDirection)}`);
+    }
+    if (crossing === firstLine && hasEventOriginEvidence(track, movementTrack, eventDirection, config)) {
+      startTrackJourney(track, eventDirection, crossing);
+    }
+    return false;
+  }
+
+  if (track.candidateDirection !== eventDirection) {
+    if (crossing === journeyFirstLine(track.candidateDirection)) {
+      resetTrackJourney(track);
+    }
+    if (crossing === firstLine && hasEventOriginEvidence(track, movementTrack, eventDirection, config)) {
+      startTrackJourney(track, eventDirection, crossing);
+    }
+    return false;
+  }
+
+  if (crossing === secondLine && movingInEventDirection(movementTrack.previousPoint, movementTrack.point, eventDirection, config)) {
+    return confirmTrackEvent(track, movementTrack, eventDirection, `${firstLine}_TO_${secondLine}`);
+  }
+
+  if (crossing === firstLine && !movingInEventDirection(movementTrack.previousPoint, movementTrack.point, eventDirection, config)) {
+    resetTrackJourney(track);
+  }
+
+  return false;
+}
+
+function startTrackJourney(track, eventDirection, crossing) {
+  track.counted = false;
+  track.candidateDirection = normalizeEventDirection(eventDirection);
+  track.phase = track.candidateDirection === "ENTRY" ? "entry_crossed_a" : "exit_crossed_b";
+  track.crossedA = crossing === "A";
+  track.crossedB = crossing === "B";
+  track.ignoredEntry = false;
+  track.ignoreReason = null;
+}
+
+function resetTrackJourney(track, preferredDirection = null) {
+  track.counted = false;
+  track.candidateDirection = preferredDirection ? normalizeEventDirection(preferredDirection) : null;
+  track.phase = "new";
+  track.crossedA = false;
+  track.crossedB = false;
+  track.ignoredEntry = false;
+  track.ignoreReason = null;
+}
+
+function shouldCountLateJourney(stored, track, eventDirection, config = state.config) {
+  if (stored.counted || !track.previousPoint || !stored.firstPoint) return false;
+  if (!hasEventOriginEvidence(stored, track, eventDirection, config)) return false;
+  return crossedEventDestinationInDirection(track.previousPoint, track.point, eventDirection, config);
+}
+
+function shouldCompleteEdgeJourney(stored, track, config = state.config) {
+  if (!stored || stored.counted || !stored.candidateDirection || !track.previousPoint) return false;
+  const eventDirection = stored.candidateDirection;
+  if (!movingInEventDirection(track.previousPoint, track.point, eventDirection, config)) return false;
+  if (crossedEventDestinationInDirection(track.previousPoint, track.point, eventDirection, config)) {
+    return confirmTrackEvent(stored, track, eventDirection, `${journeyFirstLine(eventDirection)}_TO_${journeySecondLine(eventDirection)}`);
+  }
+  if (passedEventDestinationGate(track.point, eventDirection, config, FAST_ENTRY_COMPLETION_TOLERANCE) && boxTouchesFrameEdge(track.box)) {
+    return confirmTrackEvent(stored, track, eventDirection, `${eventDirection}_EDGE`);
+  }
+  return false;
+}
+
 function confirmTrackEntry(stored, track) {
-  stored.phase = "counted";
+  return confirmTrackEvent(stored, track, "ENTRY", track.entryConfirmType || track.eventConfirmType || (isFrontalMode(state.config) ? "ENTRY_FULL" : "A_TO_B"));
+}
+
+function confirmTrackEvent(stored, track, eventDirection, confirmationType) {
+  const direction = normalizeEventDirection(eventDirection);
+  if (stored.counted && stored.lastCountedEvent === direction) return false;
+  stored.phase = direction === "ENTRY" ? "entry_counted" : "exit_counted";
   stored.counted = true;
   stored.crossedA = true;
   stored.crossedB = true;
-  registerEntry(track);
-  console.debug(`Track ${track.id} ENTRY CONFIRMED`);
-  saveState();
-  renderAll();
-  setStatus("Entrada");
+  stored.candidateDirection = null;
+  stored.lastCountedEvent = direction;
+  stored.eventConfirmType = confirmationType;
+  if (direction === "ENTRY") stored.entryConfirmType = confirmationType;
+  if (direction === "EXIT") stored.exitConfirmType = confirmationType;
+
+  const eventTrack = {
+    ...track,
+    eventConfirmType: confirmationType,
+    entryConfirmType: confirmationType,
+    exitConfirmType: confirmationType,
+  };
+  if (countModeAllows(direction, state.config)) {
+    registerTrafficEvent(direction, eventTrack);
+    console.debug(`Track ${track.id} ${direction} CONFIRMED`);
+    saveState();
+    renderAll();
+    setStatus(direction === "ENTRY" ? "Entrada" : "Salida");
+  } else {
+    saveState();
+    renderAll();
+    setStatus(direction === "ENTRY" ? "Entrada ignorada" : "Salida ignorada");
+  }
+  return true;
 }
 
-function logDebugCounts(detectedPersons, activeTracks) {
-  const now = performance.now();
-  if (now - state.lastDebugLogAt < 1000) return;
-  state.lastDebugLogAt = now;
-  console.debug(`DETECTED persons: ${detectedPersons}`);
-  console.debug(`ACTIVE tracks: ${activeTracks}`);
+function journeyFirstLine(eventDirection) {
+  return normalizeEventDirection(eventDirection) === "ENTRY" ? "A" : "B";
+}
+
+function journeySecondLine(eventDirection) {
+  return normalizeEventDirection(eventDirection) === "ENTRY" ? "B" : "A";
+}
+
+function eventOriginLine(eventDirection, config = state.config) {
+  return normalizeEventDirection(eventDirection) === "ENTRY" ? config.lineA : config.lineB;
+}
+
+function eventDestinationLine(eventDirection, config = state.config) {
+  return normalizeEventDirection(eventDirection) === "ENTRY" ? config.lineB : config.lineA;
+}
+
+function movementEventDirection(previous, current, config = state.config) {
+  if (movingInEntryDirection(previous, current, config)) return "ENTRY";
+  if (movingInEventDirection(previous, current, "EXIT", config)) return "EXIT";
+  return null;
+}
+
+function movingInEventDirection(previous, current, eventDirection, config = state.config) {
+  if (!previous || !current) return false;
+  const delta = pointAxisPixel(current, config) - pointAxisPixel(previous, config);
+  const minimum = Math.max(1, axisPixelSize(config) * 0.002);
+  const sign = normalizeEventDirection(eventDirection) === "ENTRY" ? entryDirectionSign(config) : -entryDirectionSign(config);
+  return delta * sign >= minimum;
+}
+
+function pointStartedOnEventOriginSide(point, eventDirection, config = state.config) {
+  if (!point) return false;
+  const gate = lineAxisPixel(eventOriginLine(eventDirection, config), config);
+  const axis = pointAxisPixel(point, config);
+  const tolerancePx = axisPixelSize(config) * ORIGIN_SIDE_TOLERANCE;
+  const sign = normalizeEventDirection(eventDirection) === "ENTRY" ? entryDirectionSign(config) : -entryDirectionSign(config);
+  return (axis - gate) * sign <= tolerancePx;
+}
+
+function hasEventOriginEvidence(stored, track, eventDirection, config = state.config) {
+  return pointStartedOnEventOriginSide(stored.firstPoint || track.firstPoint || track.previousPoint, eventDirection, config)
+    || pointStartedOnEventOriginSide(track.previousPoint, eventDirection, config);
+}
+
+function crossedEventDestinationInDirection(previous, current, eventDirection, config = state.config) {
+  return movingInEventDirection(previous, current, eventDirection, config)
+    && crossedLineAxis(previous, current, eventDestinationLine(eventDirection, config), config);
+}
+
+function passedEventDestinationGate(point, eventDirection, config = state.config, tolerance = 0) {
+  const gate = lineAxisPixel(eventDestinationLine(eventDirection, config), config);
+  const axis = pointAxisPixel(point, config);
+  const tolerancePx = axisPixelSize(config) * tolerance;
+  const sign = normalizeEventDirection(eventDirection) === "ENTRY" ? entryDirectionSign(config) : -entryDirectionSign(config);
+  return (axis - gate) * sign >= -tolerancePx;
 }
 
 function registerEntry(track) {
+  registerTrafficEvent("ENTRY", track);
+}
+
+function registerTrafficEvent(eventDirection, track) {
   ensureCurrentDay();
+  const direction = normalizeEventDirection(eventDirection);
   const now = new Date();
-  const previous = state.events[state.events.length - 1];
+  const previousAny = state.events[state.events.length - 1];
+  const previousSame = [...state.events].reverse().find((event) => normalizeEventDirection(event.direction || event.event) === direction);
   const parts = guayaquilParts(now);
+  const before = flowMetrics(state.events, state.config);
+  const entryTotal = before.entries + (direction === "ENTRY" ? 1 : 0);
+  const exitTotal = before.exits + (direction === "EXIT" ? 1 : 0);
+  const flowTotal = entryTotal + exitTotal;
+  const netBalance = entryTotal - exitTotal;
   const event = {
     timestamp: guayaquilIso(now),
     timestampMs: now.getTime(),
@@ -1674,18 +1995,28 @@ function registerEntry(track) {
     minute: parts.minute,
     second: parts.second,
     camera: CAMERA_NAME,
-    event: "ENTRY",
+    point_id: state.config.pointId || "POINT_01",
+    point_role: state.config.pointRole || "ENTRY",
+    count_mode: normalizeCountMode(state.config.countMode),
+    event: direction,
+    direction,
     track_id: track.id,
     counting_mode: state.config.countingMode || (isFrontalMode(state.config) ? "FRONTAL" : "LATERAL"),
-    confirmation_type: track.entryConfirmType || (isFrontalMode(state.config) ? "ENTRY_FULL" : "A_TO_B"),
+    confirmation_type: track.eventConfirmType || track.entryConfirmType || track.exitConfirmType || (direction === "ENTRY" ? "A_TO_B" : "B_TO_A"),
     proximity_score: Number.isFinite(Number(track.proximityScore)) ? round(track.proximityScore, 3) : null,
     edge_exit: track.edgeExit || "NONE",
     zone_path: Array.isArray(track.zoneHistory) ? track.zoneHistory.join("->") : "",
     apparent_motion: track.apparentMotion || "",
     age_group: track.ageGroup || "SIN_DETERMINAR",
     age_confidence: Number(track.ageConfidence || 0),
-    total_count: state.events.length + 1,
-    seconds_since_previous_entry: previous ? round((now.getTime() - previous.timestampMs) / 1000, 3) : null,
+    total_count: flowTotal,
+    entry_total: entryTotal,
+    exit_total: exitTotal,
+    flow_total: flowTotal,
+    net_balance: netBalance,
+    seconds_since_previous_event: previousAny ? round((now.getTime() - previousAny.timestampMs) / 1000, 3) : null,
+    seconds_since_previous_entry: direction === "ENTRY" && previousSame ? round((now.getTime() - previousSame.timestampMs) / 1000, 3) : null,
+    seconds_since_previous_exit: direction === "EXIT" && previousSame ? round((now.getTime() - previousSame.timestampMs) / 1000, 3) : null,
     hour_bucket: bucketLabel(now, TIME_BUCKET_MINUTES),
     minute_bucket: minuteBucketLabel(now),
     group_id: null,
@@ -1693,8 +2024,18 @@ function registerEntry(track) {
   };
   state.events.push(event);
   annotateGroups(state.events);
-  state.count = state.events.length;
-  state.debugStats.entriesConfirmed = state.count;
+  const metrics = flowMetrics(state.events, state.config);
+  state.count = metrics.displayCount;
+  state.debugStats.entriesConfirmed = metrics.entries;
+  state.debugStats.exitsConfirmed = metrics.exits;
+}
+
+function logDebugCounts(detectedPersons, activeTracks) {
+  const now = performance.now();
+  if (now - state.lastDebugLogAt < 1000) return;
+  state.lastDebugLogAt = now;
+  console.debug(`DETECTED persons: ${detectedPersons}`);
+  console.debug(`ACTIVE tracks: ${activeTracks}`);
 }
 
 function ensureCurrentDay() {
@@ -1711,6 +2052,7 @@ function ensureCurrentDay() {
   state.currentSessionId = null;
   state.tracks.clear();
   state.debugStats.entriesConfirmed = 0;
+  state.debugStats.exitsConfirmed = 0;
   if (state.running) startSession(false);
   saveState();
   renderAll();
@@ -1745,18 +2087,56 @@ function endSession(shouldSave = true) {
 }
 
 function saveCurrentDay() {
+  const summary = buildDailySummary(state.events, state.sessions);
   state.days[todayKey] = {
     date: todayKey,
-    count: state.count,
+    count: summary.display_count,
+    entries: summary.entries_today,
+    exits: summary.exits_today,
+    totalFlow: summary.total_flow,
+    netBalance: summary.net_balance,
     realCount: state.realCount,
     events: state.events,
     sessions: state.sessions,
-    summary: buildDailySummary(state.events, state.sessions),
+    summary,
+  };
+}
+
+function eventDirection(event) {
+  return normalizeEventDirection(event?.direction || event?.event || "ENTRY");
+}
+
+function directionEvents(events, direction) {
+  const normalized = normalizeEventDirection(direction);
+  return events.filter((event) => eventDirection(event) === normalized);
+}
+
+function directionCounts(events) {
+  const entries = directionEvents(events, "ENTRY").length;
+  const exits = directionEvents(events, "EXIT").length;
+  return { entries, exits, totalFlow: entries + exits, netBalance: entries - exits };
+}
+
+function flowMetrics(events, config = state.config) {
+  const counts = directionCounts(events);
+  const countMode = normalizeCountMode(config.countMode);
+  const displayCount = countMode === COUNT_MODES.EXIT_ONLY
+    ? counts.exits
+    : countMode === COUNT_MODES.BIDIRECTIONAL
+      ? counts.totalFlow
+      : counts.entries;
+  const occupancy = config.occupancyEnabled ? Math.max(0, Math.round(Number(config.initialOccupancy || 0)) + counts.netBalance) : null;
+  return {
+    ...counts,
+    displayCount,
+    countMode,
+    occupancy,
   };
 }
 
 function buildDailySummary(events, sessions, now = new Date()) {
   annotateGroups(events);
+  const dayMetrics = flowMetrics(events, state.config);
   const bucketStarts = new Set();
   events.forEach((event) => bucketStarts.add(bucketInfo(new Date(event.timestampMs), TIME_BUCKET_MINUTES).startMs));
   sessions.forEach((session) => {
@@ -1774,8 +2154,11 @@ function buildDailySummary(events, sessions, now = new Date()) {
   const rows = Array.from(bucketStarts).sort((a, b) => a - b).map((startMs) => {
     const endMs = startMs + TIME_BUCKET_MINUTES * 60000;
     const bucketEvents = events.filter((event) => event.timestampMs >= startMs && event.timestampMs < endMs);
+    const bucketMetrics = flowMetrics(bucketEvents, state.config);
     const ages = ageCounts(bucketEvents);
     const minutes = minuteCounts(bucketEvents);
+    const entryMinutes = minuteCounts(directionEvents(bucketEvents, "ENTRY"));
+    const exitMinutes = minuteCounts(directionEvents(bucketEvents, "EXIT"));
     const coverageSeconds = coverageSecondsForPeriod(sessions, startMs, endMs, now.getTime());
     const coveragePercentage = round(Math.min(100, (coverageSeconds / (TIME_BUCKET_MINUTES * 60)) * 100), 1);
     const estimated = coverageSeconds > 0 && bucketEvents.length > 0
@@ -1783,15 +2166,21 @@ function buildDailySummary(events, sessions, now = new Date()) {
       : null;
     return {
       hour: bucketLabelFromStart(startMs, TIME_BUCKET_MINUTES),
-      count: bucketEvents.length,
+      count: bucketMetrics.displayCount,
+      entries: bucketMetrics.entries,
+      exits: bucketMetrics.exits,
+      total_flow: bucketMetrics.totalFlow,
+      net_balance: bucketMetrics.netBalance,
       ...ages,
       age_percentages: agePercentages(ages, bucketEvents.length),
       avg_seconds_between_entries: averageInterval(bucketEvents),
       peak_people_per_minute: Math.max(0, ...Object.values(minutes)),
+      peak_entries_per_minute: Math.max(0, ...Object.values(entryMinutes)),
+      peak_exits_per_minute: Math.max(0, ...Object.values(exitMinutes)),
       peak_minute: peakMinute(minutes),
       coverage_seconds: round(coverageSeconds, 3),
       coverage_percentage: coveragePercentage,
-      actual_count: bucketEvents.length,
+      actual_count: bucketMetrics.displayCount,
       estimated_full_hour_count: estimated,
       ...groupStats(bucketEvents),
       variation_percent: null,
@@ -1810,28 +2199,60 @@ function buildDailySummary(events, sessions, now = new Date()) {
   const recent5 = eventsSince(events, now, LIVE_RATE_WINDOW_MINUTES);
   const recent15 = eventsSince(events, now, 15);
   const recent30 = eventsSince(events, now, 30);
+  const recentEntry5 = directionEvents(recent5, "ENTRY");
+  const recentExit5 = directionEvents(recent5, "EXIT");
   const rate = recent5.length / LIVE_RATE_WINDOW_MINUTES;
+  const entryRate = recentEntry5.length / LIVE_RATE_WINDOW_MINUTES;
+  const exitRate = recentExit5.length / LIVE_RATE_WINDOW_MINUTES;
   const currentBucket = bucketLabel(now, TIME_BUCKET_MINUTES);
   const currentRow = rows.find((row) => row.hour === currentBucket) || null;
   const ranked = [...rows].sort((a, b) => b.count - a.count);
+  const rankedFlow = [...rows].sort((a, b) => b.total_flow - a.total_flow);
+  const rankedEntries = [...rows].sort((a, b) => b.entries - a.entries);
+  const rankedExits = [...rows].sort((a, b) => b.exits - a.exits);
   const covered = rows.filter((row) => row.coverage_seconds > 0);
+  const entryPercent = dayMetrics.totalFlow > 0 ? round((dayMetrics.entries / dayMetrics.totalFlow) * 100, 1) : 0;
+  const exitPercent = dayMetrics.totalFlow > 0 ? round((dayMetrics.exits / dayMetrics.totalFlow) * 100, 1) : 0;
 
   return {
     timezone: REPORT_TIMEZONE,
-    total_today: events.length,
+    count_mode: dayMetrics.countMode,
+    total_today: dayMetrics.displayCount,
+    display_count: dayMetrics.displayCount,
+    entries_today: dayMetrics.entries,
+    exits_today: dayMetrics.exits,
+    total_flow: dayMetrics.totalFlow,
+    net_balance: dayMetrics.netBalance,
+    occupancy_estimated: dayMetrics.occupancy,
+    entry_flow_percent: entryPercent,
+    exit_flow_percent: exitPercent,
     current_bucket: currentBucket,
     current_bucket_count: currentRow ? currentRow.count : 0,
+    current_bucket_entries: currentRow ? currentRow.entries : 0,
+    current_bucket_exits: currentRow ? currentRow.exits : 0,
+    current_bucket_flow: currentRow ? currentRow.total_flow : 0,
+    current_bucket_balance: currentRow ? currentRow.net_balance : 0,
     current_bucket_age_counts: currentRow ? ageCountsFromRow(currentRow) : emptyAgeCounts(),
     last_1_minute: recent1.length,
     last_5_minutes: recent5.length,
     last_15_minutes: recent15.length,
     last_30_minutes: recent30.length,
+    entry_rate_per_minute: round(entryRate, 2),
+    exit_rate_per_minute: round(exitRate, 2),
+    total_flow_rate: round(rate, 2),
     live_rate_per_minute: round(rate, 2),
+    projected_entries_per_hour: round(entryRate * 60, 1),
+    projected_exits_per_hour: round(exitRate * 60, 1),
+    projected_flow_per_hour: round(rate * 60, 1),
     projected_people_per_hour: round(rate * 60, 1),
     peak_hour: ranked[0] || null,
+    peak_entry_hour: rankedEntries[0] || null,
+    peak_exit_hour: rankedExits[0] || null,
+    peak_flow_hour: rankedFlow[0] || null,
     second_peak_hour: ranked[1] || null,
     lowest_hour: covered.length ? [...covered].sort((a, b) => a.count - b.count)[0] : null,
     average_people_per_hour: covered.length ? round(covered.reduce((sum, row) => sum + row.count, 0) / covered.length, 1) : 0,
+    average_flow_per_hour: covered.length ? round(covered.reduce((sum, row) => sum + row.total_flow, 0) / covered.length, 1) : 0,
     hourly_summary: rows,
     ...groupStats(events),
   };
@@ -1987,46 +2408,34 @@ function orderedCrossings(previous, current, config = state.config) {
 }
 
 function applyCrossing(track, crossing, config = state.config, movementTrack = track) {
-  if (track.counted || track.phase === "counted" || track.phase === "exit" || track.phase === "ignore") return false;
-  if (track.ignoredEntry || track.originStatus === "destination") {
-    track.phase = "ignore";
-    track.ignoredEntry = true;
-    return false;
-  }
+  if (!movementTrack.previousPoint || !movementTrack.point) return false;
+  const eventDirection = movementEventDirection(movementTrack.previousPoint, movementTrack.point, config);
+  if (!eventDirection) return false;
+  const firstLine = journeyFirstLine(eventDirection);
+  const secondLine = journeySecondLine(eventDirection);
 
+  if (track.counted) return false;
   if (crossing === "A") track.crossedA = true;
   if (crossing === "B") track.crossedB = true;
 
-  if (track.phase === "new") {
-    if (crossing === "A") {
-      if (!isEntryCandidate(track)) return false;
-      track.phase = "crossedA";
-      return false;
+  if (track.phase === "new" || !track.candidateDirection) {
+    if (crossing === firstLine && hasEventOriginEvidence(track, movementTrack, eventDirection, config)) {
+      startTrackJourney(track, eventDirection, crossing);
     }
-    track.phase = "exit";
-    track.ignoredEntry = true;
     return false;
   }
 
-  if (track.phase === "crossedA") {
-    if (crossing === "B") {
-      if (!isEntryCandidate(track) || !movingInEntryDirection(movementTrack.previousPoint, movementTrack.point, config)) {
-        track.phase = "exit";
-        track.ignoredEntry = true;
-        return false;
-      }
-      track.phase = "counted";
-      track.counted = true;
-      return true;
-    }
-    track.phase = "new";
+  if (track.candidateDirection !== eventDirection) {
+    if (crossing === journeyFirstLine(track.candidateDirection)) resetTrackJourney(track);
     return false;
   }
 
-  if (track.phase === "crossedB" && crossing === "A") {
-    track.phase = "exit";
-    track.ignoredEntry = true;
-    return false;
+  if (crossing === secondLine && movingInEventDirection(movementTrack.previousPoint, movementTrack.point, eventDirection, config)) {
+    track.phase = eventDirection === "ENTRY" ? "entry_counted" : "exit_counted";
+    track.counted = true;
+    track.lastCountedEvent = eventDirection;
+    track.eventConfirmType = `${firstLine}_TO_${secondLine}`;
+    return countModeAllows(eventDirection, config);
   }
 
   return false;
@@ -2111,11 +2520,19 @@ function classifyTrackOrigin(point, config = state.config) {
 }
 
 function isEntryCandidate(track) {
-  return Boolean(track && (track.originValid || track.originStatus === "valid"));
+  return Boolean(track && !track.ignoredEntry && (track.entryOriginValid || track.originValid || track.originStatus === "valid" || track.firstZone === "FAR"));
+}
+
+function isExitCandidate(track, config = state.config) {
+  if (!track) return false;
+  if (isFrontalMode(config)) {
+    return Boolean(track.exitOriginValid || track.originStatus === "destination" || track.firstZone === "NEAR" || frontalVisited(track, "NEAR"));
+  }
+  return Boolean(track.exitOriginValid || track.originStatus === "destination" || pointStartedOnEventOriginSide(track.firstPoint || track.point, "EXIT", config));
 }
 
 function isIgnoredTrack(track) {
-  return Boolean(track && (track.ignoredEntry || track.phase === "exit" || track.phase === "ignore" || track.originStatus === "destination"));
+  return Boolean(track && (track.ignoredEntry || track.phase === "ignore"));
 }
 
 function movementDirection(previous, current, config = state.config) {
@@ -2244,6 +2661,32 @@ function isFrontalMode(config = state.config) {
   return normalizeOrientation(config.lineOrientation) === "horizontal";
 }
 
+function normalizeCountMode(value) {
+  const mode = String(value || "").toUpperCase();
+  if (mode === COUNT_MODES.EXIT_ONLY || mode === "SALIDAS") return COUNT_MODES.EXIT_ONLY;
+  if (mode === COUNT_MODES.BIDIRECTIONAL || mode === "MIXTO" || mode === "MIXED") return COUNT_MODES.BIDIRECTIONAL;
+  return COUNT_MODES.ENTRY_ONLY;
+}
+
+function countModeAllows(direction, config = state.config) {
+  const mode = normalizeCountMode(config.countMode);
+  const eventDirection = normalizeEventDirection(direction);
+  return mode === COUNT_MODES.BIDIRECTIONAL
+    || (mode === COUNT_MODES.ENTRY_ONLY && eventDirection === "ENTRY")
+    || (mode === COUNT_MODES.EXIT_ONLY && eventDirection === "EXIT");
+}
+
+function countModeLabel(mode) {
+  const normalized = normalizeCountMode(mode);
+  if (normalized === COUNT_MODES.EXIT_ONLY) return "Solo salidas";
+  if (normalized === COUNT_MODES.BIDIRECTIONAL) return "Mixto";
+  return "Solo ingresos";
+}
+
+function normalizeEventDirection(value) {
+  return String(value || "").toUpperCase() === "EXIT" ? "EXIT" : "ENTRY";
+}
+
 function normalizeDirection(value, orientation) {
   const options = allowedDirections(orientation);
   return options.includes(value) ? value : options[0];
@@ -2269,12 +2712,17 @@ function inferLineOrientation(config) {
 function updateCalibrationMetadata(config) {
   config.lineOrientation = normalizeOrientation(config.lineOrientation);
   config.countingMode = isFrontalMode(config) ? "FRONTAL" : "LATERAL";
+  config.countMode = normalizeCountMode(config.countMode);
   config.entryDirection = normalizeDirection(config.entryDirection, config.lineOrientation);
   config.minLineSeparation = Number.isFinite(config.minLineSeparation) ? clamp(config.minLineSeparation) : MIN_LINE_SEPARATION;
   config.entryProximityThreshold = clampNumber(config.entryProximityThreshold, 0.5, 0.9, DEFAULT_CONFIG.entryProximityThreshold);
   if (!config.depthCalibration || typeof config.depthCalibration !== "object") {
     config.depthCalibration = cloneConfig(DEFAULT_CONFIG.depthCalibration);
   }
+  config.occupancyEnabled = Boolean(config.occupancyEnabled);
+  config.initialOccupancy = Math.max(0, Math.round(Number(config.initialOccupancy || 0)));
+  config.pointId = String(config.pointId || DEFAULT_CONFIG.pointId);
+  config.pointRole = String(config.pointRole || DEFAULT_CONFIG.pointRole).toUpperCase();
   syncLineSpansToRoi(config);
   config.lineAPosition = round(linePosition(config.lineA, config), 4);
   config.lineBPosition = round(linePosition(config.lineB, config), 4);
@@ -2384,6 +2832,7 @@ function normalizeConfig(config, options = {}) {
 
   normalized.lineOrientation = normalizeOrientation(inferLineOrientation(config));
   normalized.entryDirection = normalizeDirection(config.entryDirection, normalized.lineOrientation);
+  normalized.countMode = normalizeCountMode(config.countMode || config.count_mode || config.COUNT_MODE);
 
   if (isRoi(config.roi)) {
     normalized.roi = isLegacyInsetRoi(config.roi) ? cloneConfig(DEFAULT_CONFIG.roi) : config.roi;
@@ -2401,6 +2850,14 @@ function normalizeConfig(config, options = {}) {
       ...config.depthCalibration,
     };
   }
+  if (Object.prototype.hasOwnProperty.call(config, "occupancyEnabled")) {
+    normalized.occupancyEnabled = Boolean(config.occupancyEnabled);
+  }
+  if (Object.prototype.hasOwnProperty.call(config, "initialOccupancy")) {
+    normalized.initialOccupancy = Math.max(0, Math.round(Number(config.initialOccupancy || 0)));
+  }
+  if (config.pointId) normalized.pointId = String(config.pointId);
+  if (config.pointRole) normalized.pointRole = String(config.pointRole).toUpperCase();
   if (config.calibrationId) normalized.calibrationId = config.calibrationId;
   if (config.sessionId) normalized.sessionId = config.sessionId;
   if (config.deviceId) normalized.deviceId = config.deviceId;
@@ -2465,6 +2922,29 @@ function setCalibrationDirection(direction) {
   renderAll();
 }
 
+function setCalibrationCountMode(countMode) {
+  const next = cloneConfig(draftConfig());
+  next.countMode = normalizeCountMode(countMode);
+  updateCalibrationMetadata(next);
+  state.calibrationDraft = next;
+  setCalibrationStatus(`Modo ${countModeLabel(next.countMode)} listo. Presiona Guardar.`, "warning");
+  renderAll();
+}
+
+function setQuickCountMode(countMode) {
+  const normalized = normalizeCountMode(countMode);
+  const next = cloneConfig(state.config);
+  next.countMode = normalized;
+  updateCalibrationMetadata(next);
+  state.config = normalizeConfig(next);
+  state.calibrationDraft = cloneConfig(state.config);
+  state.tracks.clear();
+  saveState();
+  renderAll();
+  setStatus(`Modo ${countModeLabel(normalized)}`);
+  setCalibrationStatus(`Modo ${countModeLabel(normalized)} guardado.`, "ok");
+}
+
 function validateCalibration(config) {
   if (!isRoi(config.roi)) {
     return { ok: false, kind: "error", message: "Zona invalida." };
@@ -2501,9 +2981,9 @@ function calibrationDistanceLabel(config) {
     : els.camera.videoWidth || els.calibrationOverlay.width || 1;
   const pixels = Math.round(Math.abs(config.lineAPosition - config.lineBPosition) * axisPixels);
   if (isFrontalMode(config)) {
-    return `Frontal: FAR/MID/NEAR · Separacion ${pixels}px · Prox ${Math.round(config.entryProximityThreshold * 100)}%`;
+    return `Frontal: FAR/MID/NEAR · ${countModeLabel(config.countMode)} · Separacion ${pixels}px · Prox ${Math.round(config.entryProximityThreshold * 100)}%`;
   }
-  return `Separacion: ${pixels}px · ${(Math.abs(config.lineAPosition - config.lineBPosition) * 100).toFixed(1)}%`;
+  return `${countModeLabel(config.countMode)} · Separacion: ${pixels}px · ${(Math.abs(config.lineAPosition - config.lineBPosition) * 100).toFixed(1)}%`;
 }
 
 function refreshCalibrationStatus() {
@@ -2531,6 +3011,12 @@ function renderCalibrationControls() {
     button.hidden = !visible;
     button.classList.toggle("active", button.dataset.direction === config.entryDirection);
   });
+  document.querySelectorAll("[data-count-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.countMode === config.countMode);
+  });
+  document.querySelectorAll("[data-quick-count-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.quickCountMode === state.config.countMode);
+  });
   document.querySelectorAll(".tool").forEach((button) => {
     button.classList.toggle("active", button.dataset.tool === state.activeTool);
   });
@@ -2545,6 +3031,13 @@ function renderCalibrationControls() {
   }
   if (els.proximityThresholdValue) {
     els.proximityThresholdValue.textContent = `${Math.round((config.entryProximityThreshold || DEFAULT_CONFIG.entryProximityThreshold) * 100)}%`;
+  }
+  if (els.occupancyEnabled) {
+    els.occupancyEnabled.checked = Boolean(config.occupancyEnabled);
+  }
+  if (els.initialOccupancy) {
+    els.initialOccupancy.value = String(Math.max(0, Math.round(Number(config.initialOccupancy || 0))));
+    els.initialOccupancy.disabled = !config.occupancyEnabled;
   }
   setCalibrationStatus(state.calibrationStatus || calibrationDistanceLabel(config), state.calibrationStatusKind || "ok");
 }
@@ -2708,13 +3201,14 @@ function updateCalibrationProbe(tracks) {
         recedeFrames: Math.max(Number(memory.recedeFrames || 0), Number(track.recedeFrames || 0)),
         maxProximityScore: Math.max(Number(memory.maxProximityScore || 0), Number(track.maxProximityScore || 0)),
       });
-      const decision = frontalEntryDecision(memory, track, config);
+      const decision = chooseFrontalDecision(memory, track, config);
       if (!memory.counted && decision.count) {
         memory.counted = true;
-        memory.phase = "counted";
-        memory.entryConfirmType = decision.type;
+        memory.phase = decision.event === "EXIT" ? "exit_counted" : "entry_counted";
+        memory.lastCountedEvent = decision.event;
+        memory.eventConfirmType = decision.type;
         probeCount += 1;
-        state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now(), type: decision.type });
+        state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now(), event: decision.event, type: decision.type });
       }
       state.calibrationProbe.tracks.set(track.id, memory);
       return;
@@ -2723,16 +3217,16 @@ function updateCalibrationProbe(tracks) {
       memory.previousPoint = track.previousPoint;
       memory.point = track.point;
       orderedCrossings(track.previousPoint, track.point, config).forEach((crossing) => {
-        if (applyCrossing(memory, crossing, config)) {
+        if (applyCrossing(memory, crossing, config, memory)) {
           probeCount += 1;
-          state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now() });
+          state.calibrationProbe.events.push({ id: track.id, timestamp: Date.now(), event: memory.lastCountedEvent || "ENTRY" });
         }
       });
     }
     state.calibrationProbe.tracks.set(track.id, memory);
   });
   if (probeCount > 0) {
-    setCalibrationStatus(`Prueba: +${probeCount} entrada. Oficial no cambia.`, "ok");
+    setCalibrationStatus(`Prueba: +${probeCount} evento(s). Oficial no cambia.`, "ok");
   }
 }
 
@@ -2851,7 +3345,10 @@ function drawCalibrationGuides(ctx, canvas, config) {
   ctx.fillStyle = "rgba(1, 8, 5, 0.72)";
   ctx.fillRect(10, 10, isFrontal ? 315 : 210, 28);
   ctx.fillStyle = "#eafff1";
-  ctx.fillText(isFrontal ? `Frontal: FAR -> MID -> NEAR · Prox ${Math.round(frontalProximityThreshold(config) * 100)}%` : "Entrada: A -> B", 22, 30);
+  const modeHint = normalizeCountMode(config.countMode) === COUNT_MODES.BIDIRECTIONAL
+    ? "Entrada y salida"
+    : countModeLabel(config.countMode);
+  ctx.fillText(isFrontal ? `Frontal: FAR -> NEAR / NEAR -> FAR · ${modeHint}` : `A -> B entrada / B -> A salida · ${modeHint}`, 22, 30);
   ctx.restore();
 }
 
@@ -3045,14 +3542,17 @@ function setStatus(text) {
 }
 
 function renderAll() {
-  state.count = state.events.length;
   const summary = buildDailySummary(state.events, state.sessions);
+  state.count = summary.display_count;
   applyCameraView(activeCameraConfig());
-  els.countValue.textContent = state.count;
+  const primary = primarySummaryMetric(summary, state.config);
+  if (els.countLabel) els.countLabel.textContent = primary.label;
+  els.countValue.textContent = primary.value;
   els.todayLabel.textContent = formatDate(todayKey);
-  els.historyTotal.textContent = state.count;
+  els.historyTotal.textContent = primary.value;
   els.historyDate.textContent = formatDate(todayKey);
   els.realCount.value = state.realCount;
+  renderCounterBreakdown(summary);
   renderHistory(summary);
   renderDebugMetrics(summary);
   renderLiveSummary(summary);
@@ -3061,13 +3561,38 @@ function renderAll() {
   drawCalibration();
 }
 
+function primarySummaryMetric(summary, config = state.config) {
+  const mode = normalizeCountMode(config.countMode);
+  if (mode === COUNT_MODES.EXIT_ONLY) {
+    return { label: "Salidas hoy", value: String(summary.exits_today) };
+  }
+  if (mode === COUNT_MODES.BIDIRECTIONAL) {
+    return { label: "Flujo total hoy", value: String(summary.total_flow) };
+  }
+  return { label: "Ingresos hoy", value: String(summary.entries_today) };
+}
+
+function renderCounterBreakdown(summary) {
+  if (els.entryTotalValue) els.entryTotalValue.textContent = summary.entries_today;
+  if (els.exitTotalValue) els.exitTotalValue.textContent = summary.exits_today;
+  if (els.flowTotalValue) els.flowTotalValue.textContent = summary.total_flow;
+  if (els.balanceValue) els.balanceValue.textContent = signedNumber(summary.net_balance);
+  if (els.occupancyCard) {
+    const enabled = summary.occupancy_estimated !== null && summary.occupancy_estimated !== undefined;
+    els.occupancyCard.hidden = !enabled;
+    if (enabled && els.occupancyValue) els.occupancyValue.textContent = summary.occupancy_estimated;
+  }
+}
+
 function renderDebugMetrics(summary = buildDailySummary(state.events, state.sessions)) {
   els.detectedCount.textContent = state.debugStats.detectedPersons;
   els.activeTrackCount.textContent = state.debugStats.activeTracks;
   if (els.entryCandidateCount) els.entryCandidateCount.textContent = state.debugStats.entryCandidates;
+  if (els.exitCandidateCount) els.exitCandidateCount.textContent = state.debugStats.exitCandidates;
   if (els.ignoredTrackCount) els.ignoredTrackCount.textContent = state.debugStats.ignoredTracks;
-  if (els.entriesConfirmedCount) els.entriesConfirmedCount.textContent = state.count;
-  state.debugStats.entriesConfirmed = state.count;
+  if (els.entriesConfirmedCount) els.entriesConfirmedCount.textContent = summary.total_flow;
+  state.debugStats.entriesConfirmed = summary.entries_today;
+  state.debugStats.exitsConfirmed = summary.exits_today;
   state.debugStats.last1Minute = summary.last_1_minute;
   state.debugStats.last5Minutes = summary.last_5_minutes;
   state.debugStats.liveRatePerMinute = summary.live_rate_per_minute;
@@ -3075,7 +3600,7 @@ function renderDebugMetrics(summary = buildDailySummary(state.events, state.sess
   state.debugStats.currentBucket = summary.current_bucket;
   renderTrackDebugList();
   if (state.realCount > 0) {
-    const accuracy = Math.min(999.9, (state.count / state.realCount) * 100);
+    const accuracy = Math.min(999.9, (summary.display_count / state.realCount) * 100);
     els.accuracyValue.textContent = `${accuracy.toFixed(1)}%`;
   } else {
     els.accuracyValue.textContent = "--";
@@ -3101,6 +3626,7 @@ function updateTrackDebugStats(tracks, visibleCount = state.debugStats.detectedP
   state.debugStats.detectedPersons = visibleCount;
   state.debugStats.activeTracks = mergedTracks.length;
   state.debugStats.entryCandidates = mergedTracks.filter((track) => isEntryCandidate(track) && !isIgnoredTrack(track) && !track.counted).length;
+  state.debugStats.exitCandidates = mergedTracks.filter((track) => isExitCandidate(track) && !isIgnoredTrack(track) && !track.counted).length;
   state.debugStats.ignoredTracks = mergedTracks.filter((track) => isIgnoredTrack(track)).length;
   state.debugStats.trackRows = mergedTracks
     .sort((left, right) => left.id - right.id)
@@ -3114,12 +3640,13 @@ function trackDebugText(track) {
     const motion = track.apparentMotion || "STABLE";
     const proximity = Math.round(Number(track.proximityScore || 0) * 100);
     const stateLabel = track.counted
-      ? `COUNTED ${track.entryConfirmType || ""}`.trim()
+      ? `${track.lastCountedEvent || "COUNTED"} ${track.eventConfirmType || track.entryConfirmType || track.exitConfirmType || ""}`.trim()
       : isIgnoredTrack(track)
         ? `IGNORE ${track.ignoreReason || ""}`.trim()
         : String(track.phase || "new").toUpperCase();
     const visibility = track.predicted ? "OCULTO" : "VISIBLE";
-    return `ID ${track.id} ${frontalZonePath(track)} ${motion} PROX ${proximity}% ${edge} ${stateLabel} ${visibility}`;
+    const candidate = track.candidateDirection ? `DIR ${track.candidateDirection}` : "DIR --";
+    return `ID ${track.id} ${candidate} ${frontalZonePath(track)} ${motion} PROX ${proximity}% ${edge} ${stateLabel} ${visibility}`;
   }
   const originLabels = {
     valid: "ORIGEN OK",
@@ -3133,15 +3660,16 @@ function trackDebugText(track) {
   };
   const origin = originLabels[track.originStatus] || "ORIGEN --";
   const direction = dirLabels[track.lastDirection] || "DIR --";
-  const crossedA = track.crossedA || track.phase === "crossedA" || track.phase === "counted";
-  const crossedB = track.crossedB || track.phase === "counted";
+  const crossedA = track.crossedA || String(track.phase || "").includes("_a") || String(track.phase || "").includes("counted");
+  const crossedB = track.crossedB || String(track.phase || "").includes("_b") || String(track.phase || "").includes("counted");
   const stateLabel = track.counted
-    ? "COUNTED"
+    ? `${track.lastCountedEvent || "COUNTED"}`
     : isIgnoredTrack(track)
       ? "NO CONTAR"
       : String(track.phase || "new").toUpperCase();
   const visibility = track.predicted ? "OCULTO" : "VISIBLE";
-  return `ID ${track.id} ${origin} ${direction} A ${crossedA ? "SI" : "NO"} B ${crossedB ? "SI" : "NO"} ${stateLabel} ${visibility}`;
+  const candidate = track.candidateDirection ? `CAND ${track.candidateDirection}` : "CAND --";
+  return `ID ${track.id} ${origin} ${direction} ${candidate} A ${crossedA ? "SI" : "NO"} B ${crossedB ? "SI" : "NO"} ${stateLabel} ${visibility}`;
 }
 
 function renderTrackDebugList() {
@@ -3154,28 +3682,28 @@ function renderTrackDebugList() {
 
 function renderLiveSummary(summary) {
   els.currentBucketLabel.textContent = summary.current_bucket;
-  els.currentBucketCount.textContent = `${summary.current_bucket_count} ingresos`;
-  els.liveRateValue.textContent = `${summary.live_rate_per_minute}/min`;
-  els.hourProjectionValue.textContent = `Proyección ${summary.projected_people_per_hour}/hora`;
+  els.currentBucketCount.textContent = `Ing. ${summary.current_bucket_entries} · Sal. ${summary.current_bucket_exits} · Flujo ${summary.current_bucket_flow}`;
+  els.liveRateValue.textContent = `${summary.total_flow_rate}/min`;
+  els.hourProjectionValue.textContent = `Entr. ${summary.entry_rate_per_minute}/min · Sal. ${summary.exit_rate_per_minute}/min`;
   els.last15Value.textContent = summary.last_15_minutes;
   els.last30Value.textContent = `Últimos 30 min: ${summary.last_30_minutes}`;
   els.maxGroupValue.textContent = summary.max_group_size;
   els.avgGroupValue.textContent = `Promedio ${summary.average_group_size}`;
-  els.peakHourLabel.textContent = summary.peak_hour
-    ? `Hora pico: ${summary.peak_hour.hour} · ${summary.peak_hour.count}`
-    : "Hora pico: --";
-  els.averageHourLabel.textContent = `Promedio: ${summary.average_people_per_hour}/hora`;
+  els.peakHourLabel.textContent = summary.peak_flow_hour && summary.peak_flow_hour.total_flow > 0
+    ? `Mayor flujo: ${summary.peak_flow_hour.hour} · ${summary.peak_flow_hour.total_flow}`
+    : "Mayor flujo: --";
+  els.averageHourLabel.textContent = `Promedio flujo: ${summary.average_flow_per_hour}/hora`;
 }
 
 function renderHistory(summary = buildDailySummary(state.events, state.sessions)) {
-  const rows = summary.hourly_summary.filter((item) => item.count > 0 || item.coverage_seconds > 0).reverse();
+  const rows = summary.hourly_summary.filter((item) => item.total_flow > 0 || item.coverage_seconds > 0).reverse();
   els.historyList.innerHTML = rows.length
     ? rows.map((item) => {
       const variation = item.variation_percent === null ? "" : ` · ${item.variation_percent > 0 ? "+" : ""}${item.variation_percent}%`;
       const estimate = item.estimated_full_hour_count === null ? "" : ` · Est. ${item.estimated_full_hour_count}`;
-      return `<div class="history-row"><span>${item.hour}<br><small>Cobertura ${item.coverage_percentage}%${variation}${estimate}</small></span><strong>${item.count}</strong></div>`;
+      return `<div class="history-row"><span>${item.hour}<br><small>Ing. ${item.entries} · Sal. ${item.exits} · Balance ${signedNumber(item.net_balance)} · Cobertura ${item.coverage_percentage}%${variation}${estimate}</small></span><strong>${item.total_flow}</strong></div>`;
     }).join("")
-    : '<div class="history-row"><span>Sin entradas todavia<br><small>La camara aun no registra ingresos.</small></span><strong>0</strong></div>';
+    : '<div class="history-row"><span>Sin flujo todavia<br><small>La camara aun no registra entradas ni salidas.</small></span><strong>0</strong></div>';
   renderHistoryInsights(summary);
   renderHistoryCharts(summary);
 }
@@ -3195,8 +3723,8 @@ function renderHistoryInsights(summary) {
 function renderHistoryCharts(summary) {
   const hourlyItems = historyRowsForDisplay(summary).map((row) => ({
     label: row.hour,
-    value: row.count,
-    detail: `Cobertura ${row.coverage_percentage}%`,
+    value: row.total_flow,
+    detail: `Ing. ${row.entries} · Sal. ${row.exits}`,
   }));
   const recentItems = recentMinuteSeries(state.events).map((row) => ({
     label: row.label,
@@ -3206,42 +3734,62 @@ function renderHistoryCharts(summary) {
   const ageItems = ageChartItems(state.events);
   const dayItems = dailyComparisonData().slice(-7).map((day) => ({
     label: formatDate(day.dateKey),
-    value: day.count,
+    value: day.totalFlow,
     detail: day.realCount > 0 ? `Real ${day.realCount}` : "Guardado",
   }));
 
-  renderBarChart(els.hourlyChart, hourlyItems, "ingresos");
-  renderBarChart(els.recentChart, recentItems, "ing.");
+  renderBarChart(els.hourlyChart, hourlyItems, "flujo");
+  renderBarChart(els.recentChart, recentItems, "mov.");
   renderBarChart(els.ageChart, ageItems, "pers.");
-  renderBarChart(els.dailyChart, dayItems, "ing.");
+  renderBarChart(els.dailyChart, dayItems, "mov.");
 }
 
 function buildHistoryInsights(summary) {
   const accuracy = accuracySnapshot();
-  const peak = summary.peak_hour && summary.peak_hour.count > 0
-    ? { value: summary.peak_hour.hour, detail: `${summary.peak_hour.count} ingresos en la hora con mayor movimiento.` }
-    : { value: "--", detail: "Aun no hay suficientes ingresos para definir hora pico." };
+  const peak = summary.peak_flow_hour && summary.peak_flow_hour.total_flow > 0
+    ? { value: summary.peak_flow_hour.hour, detail: `${summary.peak_flow_hour.total_flow} movimientos en la hora con mayor flujo.` }
+    : { value: "--", detail: "Aun no hay suficiente flujo para definir hora pico." };
 
   return [
     {
-      label: "Resultado del dia",
-      value: String(summary.total_today),
-      detail: "Entradas confirmadas por cruce valido.",
+      label: "Ingresos",
+      value: String(summary.entries_today),
+      detail: "Entradas confirmadas por recorrido valido.",
     },
     {
-      label: "Hora pico",
+      label: "Salidas",
+      value: String(summary.exits_today),
+      detail: "Salidas confirmadas por recorrido valido.",
+    },
+    {
+      label: "Flujo total",
+      value: `${summary.total_flow} mov.`,
+      detail: "Suma de ingresos y salidas; no son personas unicas.",
+    },
+    {
+      label: "Balance neto",
+      value: signedNumber(summary.net_balance),
+      detail: "Ingresos menos salidas. Es diferencia acumulada.",
+    },
+    {
+      label: "Mayor flujo",
       value: peak.value,
       detail: peak.detail,
     },
     {
       label: "Ritmo actual",
-      value: `${summary.live_rate_per_minute}/min`,
-      detail: `Proyeccion ${summary.projected_people_per_hour}/hora con la lectura reciente.`,
+      value: `${summary.total_flow_rate}/min`,
+      detail: `Entradas ${summary.entry_rate_per_minute}/min; salidas ${summary.exit_rate_per_minute}/min.`,
     },
     {
       label: "Grupos",
       value: String(summary.groups_count),
       detail: `Maximo ${summary.max_group_size}; promedio ${summary.average_group_size}.`,
+    },
+    {
+      label: "Modo",
+      value: countModeLabel(summary.count_mode),
+      detail: summary.count_mode === COUNT_MODES.BIDIRECTIONAL ? `Entrada ${summary.entry_flow_percent}% · salida ${summary.exit_flow_percent}%.` : "Cada punto puede tener su propio modo.",
     },
     {
       label: "Precision",
@@ -3284,7 +3832,7 @@ function renderBarChart(container, items, unit) {
 }
 
 function historyRowsForDisplay(summary) {
-  const rows = summary.hourly_summary.filter((item) => item.count > 0 || item.coverage_seconds > 0);
+  const rows = summary.hourly_summary.filter((item) => item.total_flow > 0 || item.coverage_seconds > 0);
   if (rows.length) return rows;
   return summary.hourly_summary.slice(-1);
 }
@@ -3302,15 +3850,25 @@ function dailyComparisonData() {
   const days = new Map();
   Object.entries(state.days || {}).forEach(([dateKey, day]) => {
     const dayEvents = Array.isArray(day.events) ? day.events : [];
+    const metrics = flowMetrics(dayEvents, state.config);
     days.set(dateKey, {
       dateKey,
-      count: dayEvents.length || Number(day.count || 0),
+      count: metrics.displayCount || Number(day.count || 0),
+      entries: metrics.entries || Number(day.entries || (!dayEvents.length ? day.count : 0) || 0),
+      exits: metrics.exits || Number(day.exits || 0),
+      totalFlow: metrics.totalFlow || Number(day.totalFlow || day.count || 0),
+      netBalance: metrics.netBalance || Number(day.netBalance || 0),
       realCount: Number(day.realCount || 0),
     });
   });
+  const todayMetrics = flowMetrics(state.events, state.config);
   days.set(todayKey, {
     dateKey: todayKey,
-    count: state.events.length,
+    count: todayMetrics.displayCount,
+    entries: todayMetrics.entries,
+    exits: todayMetrics.exits,
+    totalFlow: todayMetrics.totalFlow,
+    netBalance: todayMetrics.netBalance,
     realCount: state.realCount,
   });
   return Array.from(days.values()).sort((a, b) => a.dateKey.localeCompare(b.dateKey));
@@ -3343,8 +3901,9 @@ function accuracySnapshot() {
       difference: null,
     };
   }
-  const difference = state.count - state.realCount;
-  const percentage = round((state.count / state.realCount) * 100, 1);
+  const displayCount = flowMetrics(state.events, state.config).displayCount;
+  const difference = displayCount - state.realCount;
+  const percentage = round((displayCount / state.realCount) * 100, 1);
   const sign = difference > 0 ? "+" : "";
   return {
     value: `${percentage}%`,
@@ -3355,7 +3914,7 @@ function accuracySnapshot() {
 }
 
 function trafficTrendLabel(summary) {
-  if (!summary.total_today) return "Sin flujo";
+  if (!summary.total_flow) return "Sin flujo";
   if (summary.last_15_minutes > 0) return "Activo";
   if (summary.last_30_minutes > 0) return "Bajo";
   return "Sin movimiento";
@@ -3365,13 +3924,13 @@ function trafficTrendDetail(summary) {
   const rows = historyRowsForDisplay(summary).filter((row) => row.coverage_seconds > 0 || row.count > 0);
   const current = rows[rows.length - 1];
   const previous = rows[rows.length - 2];
-  if (!summary.total_today) return "El reporte queda listo cuando existan entradas.";
-  if (!current || !previous || previous.count === 0) {
+  if (!summary.total_flow) return "El reporte queda listo cuando existan entradas o salidas.";
+  if (!current || !previous || previous.total_flow === 0) {
     return `Ultimos 15 min: ${summary.last_15_minutes}; ultimos 30 min: ${summary.last_30_minutes}.`;
   }
-  const diff = current.count - previous.count;
-  if (diff > 0) return `Subio ${diff} ingreso(s) frente a la hora anterior.`;
-  if (diff < 0) return `Bajo ${Math.abs(diff)} ingreso(s) frente a la hora anterior.`;
+  const diff = current.total_flow - previous.total_flow;
+  if (diff > 0) return `Subio ${diff} movimiento(s) frente a la hora anterior.`;
+  if (diff < 0) return `Bajo ${Math.abs(diff)} movimiento(s) frente a la hora anterior.`;
   return "Se mantiene igual que la hora anterior.";
 }
 
@@ -3395,7 +3954,11 @@ function buildEventsCsv() {
     "fecha",
     "hora",
     "evento",
+    "direction",
     "track_id",
+    "point_id",
+    "point_role",
+    "count_mode",
     "modo_conteo",
     "confirmacion",
     "proximidad",
@@ -3405,7 +3968,12 @@ function buildEventsCsv() {
     "grupo_edad",
     "confianza_edad",
     "total_acumulado",
+    "entradas_acumuladas",
+    "salidas_acumuladas",
+    "flujo_acumulado",
+    "balance_neto",
     "segundos_desde_anterior",
+    "segundos_desde_misma_direccion",
     "grupo_id",
     "tamano_grupo",
     "camara",
@@ -3416,7 +3984,11 @@ function buildEventsCsv() {
       event.date || formatDate(event.dateKey || todayKey),
       formatClock(event.timestampMs),
       event.event || "ENTRY",
+      event.direction || event.event || "ENTRY",
       event.track_id ?? "",
+      event.point_id || "POINT_01",
+      event.point_role || "ENTRY",
+      event.count_mode || normalizeCountMode(state.config.countMode),
       event.counting_mode || "",
       event.confirmation_type || "",
       event.proximity_score ?? "",
@@ -3426,7 +3998,12 @@ function buildEventsCsv() {
       event.age_group || "SIN_DETERMINAR",
       event.age_confidence ?? "",
       event.total_count ?? "",
-      event.seconds_since_previous_entry ?? "",
+      event.entry_total ?? "",
+      event.exit_total ?? "",
+      event.flow_total ?? event.total_count ?? "",
+      event.net_balance ?? "",
+      event.seconds_since_previous_event ?? "",
+      eventDirection(event) === "ENTRY" ? event.seconds_since_previous_entry ?? "" : event.seconds_since_previous_exit ?? "",
       event.group_id ?? "",
       event.group_size ?? "",
       event.camera || CAMERA_NAME,
@@ -3441,67 +4018,80 @@ function buildReportPdf(summary) {
   const events = [...state.events].sort((a, b) => a.timestampMs - b.timestampMs);
   const recentItems = recentMinuteSeries(state.events).map((item) => ({ label: item.label, value: item.count }));
   const ageItems = ageChartItems(state.events);
-  const dayItems = dailyComparisonData().slice(-14).map((item) => ({ label: formatDate(item.dateKey), value: item.count }));
+  const dayItems = dailyComparisonData().slice(-14).map((item) => ({ label: formatDate(item.dateKey), value: item.totalFlow }));
 
   pdf.addHeader("Reporte de historial", [
     `Fecha: ${formatDate(todayKey)}`,
     `Camara: ${CAMERA_NAME}`,
+    `Punto: ${state.config.pointId || "POINT_01"} - ${state.config.pointRole || "ENTRY"}`,
+    `Modo de conteo: ${countModeLabel(summary.count_mode)}`,
     `Zona horaria: ${REPORT_TIMEZONE}`,
     `Generado: ${formatDateTime(Date.now())}`,
     `Version: ${REPORT_BUILD_VERSION}`,
   ]);
 
-  pdf.addCards([
-    { label: "Ingresos hoy", value: summary.total_today, detail: "Entradas confirmadas por la logica A/B." },
+  const cards = [
+    { label: "Ingresos", value: summary.entries_today, detail: "Entradas confirmadas por recorrido valido." },
+    { label: "Salidas", value: summary.exits_today, detail: "Salidas confirmadas por recorrido valido." },
+    { label: "Flujo total", value: `${summary.total_flow} mov.`, detail: "Ingresos + salidas; no son personas unicas." },
+    { label: "Balance neto", value: signedNumber(summary.net_balance), detail: "Ingresos menos salidas." },
     {
-      label: "Hora pico",
-      value: summary.peak_hour && summary.peak_hour.count > 0 ? summary.peak_hour.hour : "--",
-      detail: summary.peak_hour && summary.peak_hour.count > 0 ? `${summary.peak_hour.count} ingresos.` : "Sin hora pico definida.",
+      label: "Mayor flujo",
+      value: summary.peak_flow_hour && summary.peak_flow_hour.total_flow > 0 ? summary.peak_flow_hour.hour : "--",
+      detail: summary.peak_flow_hour && summary.peak_flow_hour.total_flow > 0 ? `${summary.peak_flow_hour.total_flow} movimientos.` : "Sin hora pico definida.",
     },
-    { label: "Promedio por hora", value: `${summary.average_people_per_hour}/h`, detail: "Sobre horas con camara activa." },
     { label: "Ultimos 30 min", value: summary.last_30_minutes, detail: "Movimiento reciente registrado." },
-    { label: "Grupo maximo", value: summary.max_group_size, detail: `Promedio de grupo ${summary.average_group_size}.` },
     { label: "Precision", value: accuracy.value, detail: accuracy.detail },
-  ]);
+  ];
+  if (summary.occupancy_estimated !== null && summary.occupancy_estimated !== undefined) {
+    cards.push({ label: "Ocup. estimada", value: summary.occupancy_estimated, detail: `Inicial ${state.config.initialOccupancy || 0} + entradas - salidas.` });
+  }
+  pdf.addCards(cards);
 
   pdf.addSection("Resultados logicos");
   pdf.addInsightGrid(buildHistoryInsights(summary));
 
   pdf.addSection("Graficos");
-  pdf.addBarChart("Ingresos por hora", hourlyRows.map((item) => ({ label: item.hour, value: item.count })), "ingresos");
-  pdf.addBarChart("Ultimos 30 minutos", recentItems, "ingresos");
+  pdf.addBarChart("Flujo por hora", hourlyRows.map((item) => ({ label: item.hour, value: item.total_flow })), "mov.");
+  pdf.addBarChart("Entradas por hora", hourlyRows.map((item) => ({ label: item.hour, value: item.entries })), "ent.");
+  pdf.addBarChart("Salidas por hora", hourlyRows.map((item) => ({ label: item.hour, value: item.exits })), "sal.");
+  pdf.addBarChart("Ultimos 30 minutos", recentItems, "mov.");
   pdf.addBarChart("Clasificacion detectada", ageItems, "personas");
-  pdf.addBarChart("Comparativo por dia", dayItems, "ingresos");
+  pdf.addBarChart("Comparativo por dia", dayItems, "mov.");
 
   pdf.addTable(
     "Resumen por hora",
-    ["Hora", "Ingresos", "Cobertura", "Est. hora", "Min. pico", "Pico/min", "Grupo prom."],
+    ["Hora", "Ing.", "Sal.", "Flujo", "Balance", "Cob.", "Est.", "Pico/min", "Grupo"],
     hourlyRows.map((row) => [
       row.hour,
-      row.count,
+      row.entries,
+      row.exits,
+      row.total_flow,
+      signedNumber(row.net_balance),
       `${row.coverage_percentage}%`,
       row.estimated_full_hour_count === null ? "--" : row.estimated_full_hour_count,
-      row.peak_minute || "--",
       row.peak_people_per_minute,
       row.average_group_size,
     ]),
-    [88, 58, 70, 70, 78, 62, 80],
+    [70, 48, 48, 48, 58, 50, 50, 58, 60],
   );
 
   pdf.addTable(
-    "Detalle de entradas",
-    ["#", "Hora", "Track", "Conf.", "Prox", "Borde", "Zonas", "Total"],
+    "Detalle de eventos",
+    ["#", "Hora", "Dir", "Track", "Conf.", "Prox", "Borde", "Zonas", "Flujo", "Balance"],
     events.map((event, index) => [
       index + 1,
       formatClock(event.timestampMs),
+      eventDirection(event),
       event.track_id ?? "",
       event.confirmation_type || "",
       event.proximity_score === null || event.proximity_score === undefined ? "--" : `${Math.round(Number(event.proximity_score) * 100)}%`,
       event.edge_exit || "NONE",
       event.zone_path || "",
-      event.total_count ?? index + 1,
+      event.flow_total ?? event.total_count ?? index + 1,
+      signedNumber(event.net_balance ?? 0),
     ]),
-    [28, 50, 44, 78, 42, 58, 210, 42],
+    [24, 45, 36, 42, 74, 36, 45, 145, 38, 38],
   );
 
   pdf.addTable(
@@ -3516,7 +4106,7 @@ function buildReportPdf(summary) {
     [70, 120, 150, 150],
   );
 
-  pdf.addNote("Lectura recomendada: usa el total diario como resultado principal. La proyeccion por hora es orientativa y depende de que la camara haya estado activa durante suficiente tiempo.");
+  pdf.addNote("Lectura recomendada: flujo total significa movimientos, no personas unicas. El balance neto es ingresos menos salidas y la ocupacion solo es estimada si todos los accesos estan cubiertos.");
   return pdf.output();
 }
 
@@ -4101,7 +4691,6 @@ function loadState() {
     }
     annotateGroups(state.events);
     state.sessions = normalizeSessions(today.sessions || []);
-    state.count = state.events.length || Number(today.count || 0);
     state.realCount = Number(today.realCount || 0);
     state.history = Array.isArray(today.history) ? today.history : [];
   }
@@ -4112,6 +4701,7 @@ function loadState() {
       saveState();
     }
   }
+  state.count = flowMetrics(state.events, state.config).displayCount;
 }
 
 function saveState() {
@@ -4248,8 +4838,8 @@ function trackInCountingZone(track, config = state.config) {
   if (pointInPolygon(track.point, config.roi)) return true;
   if (pointInRoiBounds(track.point, config.roi, ROI_EDGE_TOLERANCE)) return true;
   if (isFrontalMode(config)
-    && isEntryCandidate(track)
     && frontalVisited(track, "MID")
+    && (isEntryCandidate(track) || isExitCandidate(track, config))
     && (frontalEdgeCompatible(track, config) || Number(track.proximityScore || 0) >= frontalProximityThreshold(config) - 0.12)) {
     return true;
   }
@@ -4345,24 +4935,54 @@ function round(value, digits = 1) {
   return Math.round(Number(value || 0) * factor) / factor;
 }
 
+function signedNumber(value) {
+  const number = Number(value || 0);
+  return `${number > 0 ? "+" : ""}${number}`;
+}
+
 function normalizeEvents(events) {
-  return Array.isArray(events)
-    ? events.map((event, index) => ({
-      ...event,
-      timestampMs: Number(event.timestampMs || Date.parse(event.timestamp || new Date())),
-      total_count: Number(event.total_count || index + 1),
-      counting_mode: event.counting_mode || "",
-      confirmation_type: event.confirmation_type || "",
-      proximity_score: Number.isFinite(Number(event.proximity_score)) ? Number(event.proximity_score) : null,
-      edge_exit: event.edge_exit || "NONE",
-      zone_path: event.zone_path || "",
-      apparent_motion: event.apparent_motion || "",
-      age_group: event.age_group || "SIN_DETERMINAR",
-      age_confidence: Number(event.age_confidence || 0),
-      group_id: event.group_id || null,
-      group_size: Number(event.group_size || 1),
-    }))
-    : [];
+  if (!Array.isArray(events)) return [];
+  let entries = 0;
+  let exits = 0;
+  return events
+    .map((event, index) => {
+      const direction = normalizeEventDirection(event.direction || event.event);
+      return {
+        ...event,
+        event: direction,
+        direction,
+        timestampMs: Number(event.timestampMs || Date.parse(event.timestamp || new Date())),
+        total_count: Number(event.total_count || event.flow_total || index + 1),
+        entry_total: Number(event.entry_total || 0),
+        exit_total: Number(event.exit_total || 0),
+        flow_total: Number(event.flow_total || event.total_count || index + 1),
+        net_balance: Number(event.net_balance || 0),
+        count_mode: normalizeCountMode(event.count_mode || event.COUNT_MODE || state.config.countMode),
+        point_id: event.point_id || state.config.pointId || "POINT_01",
+        point_role: event.point_role || state.config.pointRole || "ENTRY",
+        counting_mode: event.counting_mode || "",
+        confirmation_type: event.confirmation_type || "",
+        proximity_score: Number.isFinite(Number(event.proximity_score)) ? Number(event.proximity_score) : null,
+        edge_exit: event.edge_exit || "NONE",
+        zone_path: event.zone_path || "",
+        apparent_motion: event.apparent_motion || "",
+        age_group: event.age_group || "SIN_DETERMINAR",
+        age_confidence: Number(event.age_confidence || 0),
+        group_id: event.group_id || null,
+        group_size: Number(event.group_size || 1),
+      };
+    })
+    .sort((a, b) => a.timestampMs - b.timestampMs)
+    .map((event) => {
+      if (eventDirection(event) === "ENTRY") entries += 1;
+      else exits += 1;
+      event.entry_total = entries;
+      event.exit_total = exits;
+      event.flow_total = entries + exits;
+      event.total_count = entries + exits;
+      event.net_balance = entries - exits;
+      return event;
+    });
 }
 
 function normalizeSessions(sessions) {
@@ -4394,6 +5014,10 @@ function createLegacyEvents(count, dateKey) {
       second: index % 60,
       camera: CAMERA_NAME,
       event: "ENTRY",
+      direction: "ENTRY",
+      count_mode: COUNT_MODES.ENTRY_ONLY,
+      point_id: "POINT_01",
+      point_role: "ENTRY",
       track_id: null,
       counting_mode: "LEGACY",
       confirmation_type: "LEGACY",
@@ -4404,7 +5028,13 @@ function createLegacyEvents(count, dateKey) {
       age_group: "SIN_DETERMINAR",
       age_confidence: 0,
       total_count: index + 1,
+      entry_total: index + 1,
+      exit_total: 0,
+      flow_total: index + 1,
+      net_balance: index + 1,
+      seconds_since_previous_event: index === 0 ? null : 1,
       seconds_since_previous_entry: index === 0 ? null : 1,
+      seconds_since_previous_exit: null,
       hour_bucket: "00:00-00:59",
       minute_bucket: "00:00-00:01",
       group_id: null,

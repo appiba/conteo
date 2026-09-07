@@ -7,11 +7,21 @@ const EVENT_HEADERS = [
   'HORA',
   'TIMESTAMP',
   'CAMARA',
+  'PUNTO_ID',
+  'PUNTO_ROL',
+  'MODO_CONTEO',
   'EVENTO',
+  'DIRECCION',
   'GRUPO_ETARIO',
   'CONFIANZA',
   'TOTAL',
+  'ENTRADAS',
+  'SALIDAS',
+  'FLUJO',
+  'BALANCE',
   'INTERVALO_SEGUNDOS',
+  'INTERVALO_ENTRADA',
+  'INTERVALO_SALIDA',
   'FRANJA_HORARIA'
 ];
 
@@ -20,6 +30,10 @@ const SUMMARY_HEADERS = [
   'CAMARA',
   'FRANJA',
   'TOTAL',
+  'ENTRADAS',
+  'SALIDAS',
+  'FLUJO',
+  'BALANCE',
   'NIÑOS',
   'ADOLESCENTES',
   'JOVENES',
@@ -65,13 +79,27 @@ function appendEntry_(entry) {
     Utilities.formatDate(timestamp, REPORT_TIMEZONE, 'HH:mm:ss'),
     entry.timestamp || Utilities.formatDate(timestamp, REPORT_TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX"),
     entry.camera || 'CAMARA_01',
+    entry.point_id || 'POINT_01',
+    entry.point_role || 'ENTRY',
+    entry.count_mode || 'ENTRY_ONLY',
     entry.event || 'ENTRY',
+    entry.direction || entry.event || 'ENTRY',
     entry.age_group || 'SIN_DETERMINAR',
     Number(entry.age_confidence || entry.confidence || 0),
-    Number(entry.total_count || entry.count || 0),
+    Number(entry.total_count || entry.flow_total || entry.count || 0),
+    Number(entry.entry_total || 0),
+    Number(entry.exit_total || 0),
+    Number(entry.flow_total || entry.total_count || 0),
+    Number(entry.net_balance || 0),
+    entry.seconds_since_previous_event === null || entry.seconds_since_previous_event === undefined
+      ? ''
+      : Number(entry.seconds_since_previous_event),
     entry.seconds_since_previous_entry === null || entry.seconds_since_previous_entry === undefined
       ? ''
       : Number(entry.seconds_since_previous_entry),
+    entry.seconds_since_previous_exit === null || entry.seconds_since_previous_exit === undefined
+      ? ''
+      : Number(entry.seconds_since_previous_exit),
     entry.hour_bucket || ''
   ]);
 }
@@ -85,7 +113,11 @@ function upsertSummary_(summary, camera) {
     date,
     camera || summary.camera || 'CAMARA_01',
     summary.hour || summary.hour_bucket || '',
-    Number(summary.count || summary.actual_count || 0),
+    Number(summary.count || summary.total_flow || summary.actual_count || 0),
+    Number(summary.entries || summary.entries_today || 0),
+    Number(summary.exits || summary.exits_today || 0),
+    Number(summary.total_flow || summary.count || 0),
+    Number(summary.net_balance || 0),
     Number(summary.children || 0),
     Number(summary.adolescents || 0),
     Number(summary.youth || 0),

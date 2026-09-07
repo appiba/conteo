@@ -29,8 +29,14 @@ class EntryCounterTest(unittest.TestCase):
         track_id: int = 1,
         entry_direction: str = "LEFT_TO_RIGHT",
         line_orientation: str = "vertical",
+        count_mode: str = "ENTRY_ONLY",
     ) -> int:
-        counter = EntryCounter(initial_count=0, entry_direction=entry_direction, line_orientation=line_orientation)
+        counter = EntryCounter(
+            initial_count=0,
+            entry_direction=entry_direction,
+            line_orientation=line_orientation,
+            count_mode=count_mode,
+        )
         total_increment = 0
         for frame_index, point in enumerate(points):
             if isinstance(point, tuple):
@@ -44,6 +50,7 @@ class EntryCounterTest(unittest.TestCase):
                 frame_index,
                 entry_direction=entry_direction,
                 line_orientation=line_orientation,
+                count_mode=count_mode,
             )
             total_increment += update.increment
         return total_increment
@@ -185,6 +192,63 @@ class EntryCounterTest(unittest.TestCase):
             ),
             0,
         )
+
+    def test_entry_only_counts_entries_and_ignores_exits(self):
+        counter = EntryCounter(initial_count=0, count_mode="ENTRY_ONLY")
+        total_increment = 0
+        paths = {
+            1: [50, 120, 160, 220],
+            2: [55, 125, 170, 230],
+            3: [60, 130, 180, 240],
+            4: [250, 180, 140, 80],
+            5: [245, 175, 135, 75],
+        }
+        for frame_index in range(4):
+            people = [person_at_point(path[frame_index], track_id=track_id) for track_id, path in paths.items()]
+            update = counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index, count_mode="ENTRY_ONLY")
+            total_increment += update.increment
+
+        self.assertEqual(total_increment, 3)
+
+    def test_exit_only_counts_exits_and_ignores_entries(self):
+        counter = EntryCounter(initial_count=0, count_mode="EXIT_ONLY")
+        total_increment = 0
+        exit_events = 0
+        paths = {
+            1: [50, 120, 160, 220],
+            2: [55, 125, 170, 230],
+            3: [250, 180, 140, 80],
+            4: [245, 175, 135, 75],
+            5: [240, 170, 130, 70],
+        }
+        for frame_index in range(4):
+            people = [person_at_point(path[frame_index], track_id=track_id) for track_id, path in paths.items()]
+            update = counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index, count_mode="EXIT_ONLY")
+            total_increment += update.increment
+            exit_events += update.exit_increment
+
+        self.assertEqual(total_increment, 3)
+        self.assertEqual(exit_events, 3)
+
+    def test_mixed_counts_entry_and_exit_as_flow(self):
+        counter = EntryCounter(initial_count=0, count_mode="BIDIRECTIONAL")
+        total_increment = 0
+        entry_events = 0
+        exit_events = 0
+        paths = {
+            1: [50, 120, 160, 220],
+            2: [250, 180, 140, 80],
+        }
+        for frame_index in range(4):
+            people = [person_at_point(path[frame_index], track_id=track_id) for track_id, path in paths.items()]
+            update = counter.update(people, LINE_A_LEFT, LINE_B_RIGHT, frame_index, count_mode="BIDIRECTIONAL")
+            total_increment += update.increment
+            entry_events += update.entry_increment
+            exit_events += update.exit_increment
+
+        self.assertEqual(total_increment, 2)
+        self.assertEqual(entry_events, 1)
+        self.assertEqual(exit_events, 1)
 
 
 if __name__ == "__main__":

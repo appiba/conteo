@@ -48,6 +48,28 @@ class CountStorageTest(unittest.TestCase):
             self.assertEqual(storage.data["days"]["2026-08-31"]["count"], 1)
             self.assertIn("2026-09-01", storage.data["days"])
 
+    def test_records_exit_event_with_bidirectional_fields(self):
+        current = [datetime(2026, 8, 31, 17, 0, 0, tzinfo=TZ)]
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = CountStorage(
+                Path(tmp) / "count.json",
+                {"camera_name": "ENTRADA_01", "count_mode": "BIDIRECTIONAL"},
+                now_fn=lambda: current[0],
+            )
+            storage.record_entry(CounterEvent(1, "entry", "entrada", counted=True))
+            current[0] = datetime(2026, 8, 31, 17, 1, 0, tzinfo=TZ)
+            storage.record_event(CounterEvent(2, "exit", "salida", direction="EXIT", counted=True), event_direction="EXIT")
+
+            summary = storage.summary()
+            day = storage.data["days"]["2026-08-31"]
+
+            self.assertEqual(day["events"][1]["direction"], "EXIT")
+            self.assertEqual(day["events"][1]["entry_total"], 1)
+            self.assertEqual(day["events"][1]["exit_total"], 1)
+            self.assertEqual(summary["entries_today"], 1)
+            self.assertEqual(summary["exits_today"], 1)
+            self.assertEqual(summary["net_balance"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,17 +92,31 @@ class CountStorage:
         camera: str | None = None,
         timestamp: datetime | str | None = None,
     ) -> dict[str, Any]:
+        return self.record_event(event=event, event_direction="ENTRY", camera=camera, timestamp=timestamp)
+
+    def record_event(
+        self,
+        event: CounterEvent | None = None,
+        event_direction: str | None = None,
+        camera: str | None = None,
+        timestamp: datetime | str | None = None,
+    ) -> dict[str, Any]:
         now = to_report_time(timestamp or self.now_fn())
         day = self._ensure_day(now.date().isoformat())
         total_count = int(day.get("count", 0)) + 1
-        payload = self.analytics.build_entry_event(
+        direction = event_direction or (event.direction if event is not None else "ENTRY")
+        payload = self.analytics.build_traffic_event(
             existing_events=day["events"],
             camera=camera or self.camera_name,
             track_id=event.track_id if event is not None else None,
+            event_direction=direction,
             age_group=event.age_group if event is not None else "SIN_DETERMINAR",
             age_confidence=event.age_confidence if event is not None else 0.0,
             total_count=total_count,
             timestamp=now,
+            count_mode=str(self.config.get("count_mode", "ENTRY_ONLY")),
+            point_id=str(self.config.get("point_id", "POINT_01")),
+            point_role=str(self.config.get("point_role", "ENTRY")),
         )
         day["events"].append(payload)
         self.analytics.annotate_groups(day["events"])

@@ -26,7 +26,7 @@ def format_event_log(event) -> str:
     if event.kind == "entry":
         return f"Track {event.track_id} ENTRY CONFIRMED"
     if event.kind == "exit":
-        return f"Track {event.track_id} EXIT / NOT COUNTED"
+        return f"Track {event.track_id} EXIT {'CONFIRMED' if event.counted else 'IGNORED'}"
     if event.kind == "backed_out":
         return f"Track {event.track_id} backed out before entry"
     return event.message
@@ -158,6 +158,7 @@ def main() -> int:
         ttl_frames=int(config.get("track_ttl_frames", 45)),
         entry_direction=str(config.get("entry_direction", "LEFT_TO_RIGHT")),
         line_orientation=str(config.get("line_orientation", "vertical")),
+        count_mode=str(config.get("count_mode", "ENTRY_ONLY")),
     )
     calibration = CalibrationController(config=config, config_path=config_path)
     sheets = SheetsClient(config)
@@ -241,19 +242,26 @@ def main() -> int:
                     frame_index,
                     entry_direction=str(config.get("entry_direction", "LEFT_TO_RIGHT")),
                     line_orientation=str(config.get("line_orientation", "vertical")),
+                    count_mode=str(config.get("count_mode", "ENTRY_ONLY")),
                 )
                 last_events = update.events
                 if bool(config.get("debug", True)):
                     for event in update.events:
                         print(format_event_log(event))
                 if update.increment:
-                    entry_payloads = []
+                    traffic_payloads = []
                     for event in update.events:
-                        if event.kind != "entry":
+                        if event.kind not in ("entry", "exit"):
                             continue
-                        entry_payload = storage.record_entry(event, camera=str(config.get("camera_name", "CAMARA_01")))
-                        entry_payloads.append(entry_payload)
-                        sheets.send_entry(entry_payload)
+                        if not event.counted:
+                            continue
+                        traffic_payload = storage.record_event(
+                            event,
+                            event_direction=event.direction,
+                            camera=str(config.get("camera_name", "CAMARA_01")),
+                        )
+                        traffic_payloads.append(traffic_payload)
+                        sheets.send_entry(traffic_payload)
                     counter.set_total(storage.count)
                     current_summary = storage.current_hour_summary()
                     sheets.send_hourly_summary(current_summary)

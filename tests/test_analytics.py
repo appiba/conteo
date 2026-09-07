@@ -28,6 +28,21 @@ def add_entry(events, analytics: TrafficAnalytics, when: datetime, track_id: int
     return event
 
 
+def add_traffic_event(events, analytics: TrafficAnalytics, when: datetime, track_id: int, direction: str):
+    event = analytics.build_traffic_event(
+        existing_events=events,
+        camera="ENTRADA_01",
+        track_id=track_id,
+        event_direction=direction,
+        count_mode="BIDIRECTIONAL",
+        total_count=len(events) + 1,
+        timestamp=when,
+    )
+    events.append(event)
+    analytics.annotate_groups(events)
+    return event
+
+
 class TrafficAnalyticsTest(unittest.TestCase):
     def test_ten_people_in_one_minute(self):
         analytics = TrafficAnalytics()
@@ -107,6 +122,25 @@ class TrafficAnalyticsTest(unittest.TestCase):
         self.assertEqual(hour["youth"], 2)
         self.assertEqual(hour["children"], 1)
         self.assertEqual(sum(hour[field] for field in ("children", "adolescents", "youth", "adults", "older_adults", "undetermined")), 6)
+
+    def test_bidirectional_summary_reports_entries_exits_flow_and_balance(self):
+        analytics = TrafficAnalytics()
+        events = []
+        add_traffic_event(events, analytics, at(17, 0, 0), 1, "ENTRY")
+        add_traffic_event(events, analytics, at(17, 1, 0), 2, "EXIT")
+        add_traffic_event(events, analytics, at(17, 2, 0), 3, "ENTRY")
+
+        summary = analytics.summarize_day(events, full_hour_session(), now=at(17, 3, 0))
+        hour = summary["hourly_summary"][0]
+
+        self.assertEqual(summary["entries_today"], 2)
+        self.assertEqual(summary["exits_today"], 1)
+        self.assertEqual(summary["total_flow"], 3)
+        self.assertEqual(summary["net_balance"], 1)
+        self.assertEqual(hour["entries"], 2)
+        self.assertEqual(hour["exits"], 1)
+        self.assertEqual(hour["total_flow"], 3)
+        self.assertEqual(hour["net_balance"], 1)
 
 
 def full_hour_session():

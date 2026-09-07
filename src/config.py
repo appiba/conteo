@@ -33,6 +33,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "track_ttl_frames": 70,
     "line_orientation": "vertical",
     "entry_direction": "LEFT_TO_RIGHT",
+    "count_mode": "ENTRY_ONLY",
     "line_a_position": 0.32,
     "line_b_position": 0.46,
     "line_separation": 0.14,
@@ -81,6 +82,7 @@ CAMERA_RESOLUTIONS = {"auto", "640x480", "1280x720", "1920x1080"}
 CAMERA_ASPECT_RATIOS = {"auto", "16:9", "4:3"}
 CAMERA_FPS_OPTIONS = {"auto", "15", "20", "25", "30"}
 CAMERA_FIT_MODES = {"fit", "cover"}
+COUNT_MODES = {"ENTRY_ONLY", "EXIT_ONLY", "BIDIRECTIONAL"}
 
 
 def load_config(path: Path | str = "config.json") -> dict[str, Any]:
@@ -151,6 +153,7 @@ def validate_config(config: dict[str, Any]) -> None:
             "entry_direction debe ser uno de "
             f"{sorted(ENTRY_DIRECTIONS_BY_ORIENTATION[line_orientation])} para orientacion {line_orientation}."
         )
+    _require_choice(config, "count_mode", COUNT_MODES)
     _require_number(config, "line_a_position", minimum=0.0, maximum=1.0)
     _require_number(config, "line_b_position", minimum=0.0, maximum=1.0)
     _require_number(config, "line_separation", minimum=0.0, maximum=1.0)

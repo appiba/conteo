@@ -335,6 +335,58 @@ canvas {
   letter-spacing: 0;
 }
 
+.counter-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.counter-breakdown article {
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  padding: 9px 10px;
+  background: #07110c;
+  border: 1px solid #1c3025;
+  border-radius: 8px;
+}
+
+.counter-breakdown span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.counter-breakdown strong {
+  color: #dff8ea;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.counter-breakdown .occupancy-card {
+  grid-column: 1 / -1;
+}
+
+.quick-mode-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  background: #0b110e;
+  border: 1px solid #18271f;
+  border-radius: 8px;
+}
+
+.quick-mode-card > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -406,6 +458,57 @@ canvas {
 
 .direction-grid {
   grid-template-columns: repeat(2, 1fr);
+}
+
+.count-mode-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.occupancy-settings {
+  grid-template-columns: 1fr 1fr;
+}
+
+.toggle-field,
+.number-field {
+  min-height: 50px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #0b110e;
+  border: 1px solid #1f3328;
+  border-radius: 8px;
+}
+
+.toggle-field {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  align-content: center;
+}
+
+.toggle-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
+.toggle-field span,
+.number-field span {
+  color: #dff8ea;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.number-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 8px;
+  background: #06100b;
+  color: var(--green);
+  font-size: 18px;
+  font-weight: 800;
 }
 
 .segmented button {
@@ -889,5 +992,16 @@ canvas {
 
   #view-history .history-charts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .count-mode-grid,
+  .occupancy-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .counter-breakdown {
+    grid-template-columns: 1fr 1fr;
   }
 }

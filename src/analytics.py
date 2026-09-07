@@ -92,11 +92,47 @@ class TrafficAnalytics:
         total_count: int = 0,
         timestamp: datetime | str | None = None,
     ) -> dict[str, Any]:
+        return self.build_traffic_event(
+            existing_events=existing_events,
+            camera=camera,
+            track_id=track_id,
+            event_direction="ENTRY",
+            age_group=age_group,
+            age_confidence=age_confidence,
+            total_count=total_count,
+            timestamp=timestamp,
+        )
+
+    def build_traffic_event(
+        self,
+        existing_events: list[dict[str, Any]],
+        camera: str,
+        track_id: int | None,
+        event_direction: str = "ENTRY",
+        age_group: str = "SIN_DETERMINAR",
+        age_confidence: float = 0.0,
+        total_count: int = 0,
+        timestamp: datetime | str | None = None,
+        count_mode: str = "ENTRY_ONLY",
+        point_id: str = "POINT_01",
+        point_role: str = "ENTRY",
+    ) -> dict[str, Any]:
         event_time = to_report_time(timestamp)
-        previous_time = _last_entry_time(existing_events)
-        seconds_since_previous = None
-        if previous_time is not None:
-            seconds_since_previous = round(max(0.0, (event_time - previous_time).total_seconds()), 3)
+        direction = normalize_event_direction(event_direction)
+        previous_any_time = _last_event_time(existing_events)
+        previous_same_time = _last_event_time(existing_events, direction)
+        seconds_since_previous_event = None
+        seconds_since_same = None
+        if previous_any_time is not None:
+            seconds_since_previous_event = round(max(0.0, (event_time - previous_any_time).total_seconds()), 3)
+        if previous_same_time is not None:
+            seconds_since_same = round(max(0.0, (event_time - previous_same_time).total_seconds()), 3)
+
+        before = direction_counts(existing_events)
+        entry_total = before["entries"] + (1 if direction == "ENTRY" else 0)
+        exit_total = before["exits"] + (1 if direction == "EXIT" else 0)
+        flow_total = entry_total + exit_total
+        net_balance = entry_total - exit_total
 
         normalized_age_group = normalize_age_group(age_group)
         return {
@@ -107,12 +143,22 @@ class TrafficAnalytics:
             "minute": event_time.minute,
             "second": event_time.second,
             "camera": camera,
-            "event": "ENTRY",
+            "point_id": point_id or "POINT_01",
+            "point_role": str(point_role or "ENTRY").upper(),
+            "count_mode": normalize_count_mode(count_mode),
+            "event": direction,
+            "direction": direction,
             "track_id": track_id,
             "age_group": normalized_age_group,
             "age_confidence": round(float(age_confidence or 0.0), 3),
-            "total_count": int(total_count),
-            "seconds_since_previous_entry": seconds_since_previous,
+            "total_count": int(total_count or flow_total),
+            "entry_total": entry_total,
+            "exit_total": exit_total,
+            "flow_total": flow_total,
+            "net_balance": net_balance,
+            "seconds_since_previous_event": seconds_since_previous_event,
+            "seconds_since_previous_entry": seconds_since_same if direction == "ENTRY" else None,
+            "seconds_since_previous_exit": seconds_since_same if direction == "EXIT" else None,
             "hour_bucket": bucket_label(event_time, self.config.time_bucket_minutes),
             "minute_bucket": minute_bucket_label(event_time),
             "group_id": None,
@@ -145,8 +191,11 @@ class TrafficAnalytics:
             bucket_events = [
                 event for event in ordered_events if start <= parse_timestamp(event["timestamp"]) < end_exclusive
             ]
+            bucket_counts = direction_counts(bucket_events)
             age_counts = _age_counts(bucket_events)
             minute_counts = _minute_counts(bucket_events)
+            entry_minute_counts = _minute_counts([event for event in bucket_events if event_direction(event) == "ENTRY"])
+            exit_minute_counts = _minute_counts([event for event in bucket_events if event_direction(event) == "EXIT"])
             coverage_seconds = coverage_seconds_for_period(sessions, start, end_exclusive, current_time)
             coverage_percentage = round(min(100.0, (coverage_seconds / bucket_seconds) * 100.0), 1)
             estimate = None
@@ -157,10 +206,16 @@ class TrafficAnalytics:
                 {
                     "hour": bucket_label(start, bucket_minutes),
                     "count": len(bucket_events),
+                    "entries": bucket_counts["entries"],
+                    "exits": bucket_counts["exits"],
+                    "total_flow": bucket_counts["total_flow"],
+                    "net_balance": bucket_counts["net_balance"],
                     **age_counts,
                     "age_percentages": _age_percentages(age_counts, len(bucket_events)),
                     "avg_seconds_between_entries": _avg_interval(bucket_events),
                     "peak_people_per_minute": max(minute_counts.values(), default=0),
+                    "peak_entries_per_minute": max(entry_minute_counts.values(), default=0),
+                    "peak_exits_per_minute": max(exit_minute_counts.values(), default=0),
                     "peak_minute": _peak_minute(minute_counts),
                     "coverage_seconds": round(coverage_seconds, 3),
                     "coverage_percentage": coverage_percentage,
@@ -183,16 +238,31 @@ class TrafficAnalytics:
         recent_15 = events_since(ordered_events, current_time, minutes=15)
         recent_30 = events_since(ordered_events, current_time, minutes=30)
         rate = len(recent_5) / self.config.live_rate_window_minutes
+        entry_rate = len([event for event in recent_5 if event_direction(event) == "ENTRY"]) / self.config.live_rate_window_minutes
+        exit_rate = len([event for event in recent_5 if event_direction(event) == "EXIT"]) / self.config.live_rate_window_minutes
         current_bucket = bucket_label(current_time, bucket_minutes)
         current_bucket_summary = next((item for item in summaries if item["hour"] == current_bucket), None)
         ranked = sorted(summaries, key=lambda item: item["count"], reverse=True)
+        ranked_entries = sorted(summaries, key=lambda item: item["entries"], reverse=True)
+        ranked_exits = sorted(summaries, key=lambda item: item["exits"], reverse=True)
+        ranked_flow = sorted(summaries, key=lambda item: item["total_flow"], reverse=True)
         covered = [item for item in summaries if item["coverage_seconds"] > 0]
+        day_counts = direction_counts(ordered_events)
 
         return {
             "timezone": REPORT_TIMEZONE,
             "total_today": len(ordered_events),
+            "display_count": len(ordered_events),
+            "entries_today": day_counts["entries"],
+            "exits_today": day_counts["exits"],
+            "total_flow": day_counts["total_flow"],
+            "net_balance": day_counts["net_balance"],
             "current_bucket": current_bucket,
             "current_bucket_count": current_bucket_summary["count"] if current_bucket_summary else 0,
+            "current_bucket_entries": current_bucket_summary["entries"] if current_bucket_summary else 0,
+            "current_bucket_exits": current_bucket_summary["exits"] if current_bucket_summary else 0,
+            "current_bucket_flow": current_bucket_summary["total_flow"] if current_bucket_summary else 0,
+            "current_bucket_balance": current_bucket_summary["net_balance"] if current_bucket_summary else 0,
             "current_bucket_age_counts": {
                 field: current_bucket_summary[field] if current_bucket_summary else 0 for field in AGE_SUMMARY_FIELDS
             },
@@ -200,12 +270,24 @@ class TrafficAnalytics:
             "last_5_minutes": len(recent_5),
             "last_15_minutes": len(recent_15),
             "last_30_minutes": len(recent_30),
+            "entry_rate_per_minute": round(entry_rate, 2),
+            "exit_rate_per_minute": round(exit_rate, 2),
+            "total_flow_rate": round(rate, 2),
             "live_rate_per_minute": round(rate, 2),
+            "projected_entries_per_hour": round(entry_rate * 60.0, 1),
+            "projected_exits_per_hour": round(exit_rate * 60.0, 1),
+            "projected_flow_per_hour": round(rate * 60.0, 1),
             "projected_people_per_hour": round(rate * 60.0, 1),
             "peak_hour": ranked[0] if ranked else None,
+            "peak_entry_hour": ranked_entries[0] if ranked_entries else None,
+            "peak_exit_hour": ranked_exits[0] if ranked_exits else None,
+            "peak_flow_hour": ranked_flow[0] if ranked_flow else None,
             "second_peak_hour": ranked[1] if len(ranked) > 1 else None,
             "lowest_hour": min(covered, key=lambda item: item["count"]) if covered else None,
             "average_people_per_hour": round(sum(item["count"] for item in covered) / len(covered), 1)
+            if covered
+            else 0.0,
+            "average_flow_per_hour": round(sum(item["total_flow"] for item in covered) / len(covered), 1)
             if covered
             else 0.0,
             "hourly_summary": summaries,
@@ -250,6 +332,34 @@ def normalize_age_group(value: str | None) -> str:
 
 def age_field(value: str | None) -> str:
     return AGE_GROUP_TO_FIELD.get(str(normalize_age_group(value)).upper(), "undetermined")
+
+
+def normalize_event_direction(value: str | None) -> str:
+    return "EXIT" if str(value or "").strip().upper() in {"EXIT", "SALIDA", "SALIDAS"} else "ENTRY"
+
+
+def normalize_count_mode(value: str | None) -> str:
+    normalized = str(value or "ENTRY_ONLY").strip().upper()
+    if normalized in {"EXIT_ONLY", "SALIDAS"}:
+        return "EXIT_ONLY"
+    if normalized in {"BIDIRECTIONAL", "MIXTO", "MIXED"}:
+        return "BIDIRECTIONAL"
+    return "ENTRY_ONLY"
+
+
+def event_direction(event: dict[str, Any]) -> str:
+    return normalize_event_direction(str(event.get("direction") or event.get("event") or "ENTRY"))
+
+
+def direction_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    entries = sum(1 for event in events if event_direction(event) == "ENTRY")
+    exits = sum(1 for event in events if event_direction(event) == "EXIT")
+    return {
+        "entries": entries,
+        "exits": exits,
+        "total_flow": entries + exits,
+        "net_balance": entries - exits,
+    }
 
 
 def bucket_start(value: datetime, minutes: int = 60) -> datetime:
@@ -333,8 +443,15 @@ def annotate_group_events(events: list[dict[str, Any]], group_window_seconds: fl
 
 
 def _last_entry_time(events: list[dict[str, Any]]) -> datetime | None:
+    return _last_event_time(events, "ENTRY")
+
+
+def _last_event_time(events: list[dict[str, Any]], direction: str | None = None) -> datetime | None:
+    normalized_direction = normalize_event_direction(direction) if direction else None
     for event in reversed(events):
-        if event.get("event") == "ENTRY" and event.get("timestamp"):
+        if normalized_direction is not None and event_direction(event) != normalized_direction:
+            continue
+        if event.get("timestamp"):
             return parse_timestamp(str(event["timestamp"]))
     return None
 
